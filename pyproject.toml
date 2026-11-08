@@ -30,6 +30,7 @@ dev = [
 ]
 
 [project.scripts]
+daedalus = "main:main"
 unstop-autopilot = "main:main"
 
 [tool.setuptools.packages.find]
