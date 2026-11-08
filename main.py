@@ -80,6 +80,11 @@ def parse_args() -> argparse.Namespace:
         help="Run background scheduler daemon (APScheduler) continuously",
     )
     parser.add_argument(
+        "--login",
+        action="store_true",
+        help="Launch visible browser window to log in and save your Unstop account session",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Enable verbose debug logging",
@@ -102,6 +107,31 @@ def main() -> int:
     if args.diagnostics:
         dashboard = Dashboard()
         dashboard._system_diagnostics(wait_for_input=False)
+        return 0
+
+    if args.login:
+        from browser.browser_manager import BrowserManager
+
+        print("Launching visible Chromium browser for Unstop authentication...")
+        bm = BrowserManager()
+        bm.launch(headless=False)
+        page = bm.new_page()
+        try:
+            page.goto("https://unstop.com/login", wait_until="domcontentloaded")
+            print("\n" + "=" * 65)
+            print("Chromium window opened! Log in to your Unstop account.")
+            print("Credentials are never touched by code; cookies save to data/browser_profile/.")
+            print("=" * 65 + "\n")
+            input("Press [Enter] here once you have finished logging into Unstop... ")
+            if bm.check_login_status(page):
+                print("\n[SUCCESS] Authentication detected! Your Unstop account is now active.")
+            else:
+                print("\n[INFO] Session saved to data/browser_profile/. If login was completed, the session is active.")
+        except Exception as exc:
+            print(f"\n[ERROR] Login session encountered an error: {exc}")
+        finally:
+            bm.close()
+            print("Browser closed cleanly.")
         return 0
 
     if args.discover:
