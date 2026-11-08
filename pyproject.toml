@@ -30,6 +30,7 @@ dev = [
 ]
 
 [project.scripts]
+agentx = "main:main"
 daedalus = "main:main"
 unstop-autopilot = "main:main"
 
