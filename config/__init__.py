@@ -168,6 +168,17 @@ class UserPreferences:
 
 
 @dataclass
+class QuizAutomationSettings:
+    """Live quiz autonomous solving configuration."""
+    autonomous_mode: bool = field(default_factory=lambda: _env_bool("QUIZ_AUTONOMOUS_MODE", True))
+    human_like_delay_min: float = 0.5
+    human_like_delay_max: float = 1.5
+    max_solve_timeout: int = field(default_factory=lambda: _env_int("QUIZ_SOLVE_TIMEOUT", 8))
+    abort_on_proctoring: bool = field(default_factory=lambda: _env_bool("QUIZ_ABORT_ON_PROCTORING", True))
+    skip_low_confidence: bool = False
+
+
+@dataclass
 class Settings:
     """Master settings container."""
     ollama: OllamaSettings = field(default_factory=OllamaSettings)
@@ -178,6 +189,7 @@ class Settings:
     scheduler: SchedulerSettings = field(default_factory=SchedulerSettings)
     logging: LoggingSettings = field(default_factory=LoggingSettings)
     user_preferences: UserPreferences = field(default_factory=UserPreferences)
+    quiz_automation: QuizAutomationSettings = field(default_factory=QuizAutomationSettings)
     project_root: Path = _PROJECT_ROOT
     version: str = "0.1.0"
     app_name: str = "Unstop Autopilot"

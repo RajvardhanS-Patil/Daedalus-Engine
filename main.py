@@ -85,6 +85,12 @@ def parse_args() -> argparse.Namespace:
         help="Launch visible browser window to log in and save your Unstop account session",
     )
     parser.add_argument(
+        "--quiz",
+        type=str,
+        metavar="URL",
+        help="Launch autonomous live quiz solver on the specified Unstop assessment URL",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Enable verbose debug logging",
@@ -133,6 +139,37 @@ def main() -> int:
             bm.close()
             print("Browser closed cleanly.")
         return 0
+
+    if args.quiz:
+        from agents.quiz_agent import LiveQuizAgent
+
+        print(f"Launching AgentX Autonomous Live Quiz Solver on {args.quiz}...")
+        agent = LiveQuizAgent()
+
+        def _cli_cb(event):
+            ev = event.get("event")
+            data = event.get("data")
+            if ev == "status":
+                print(f"[*] {data}")
+            elif ev == "question_scraped":
+                print(f"\n[Q{data.get('number')}/{data.get('total')}] {data.get('text')[:80]}...")
+            elif ev == "answer_decided":
+                print(f" -> Selected [{data.get('chosen_index')}]: {data.get('chosen_option')} (Conf: {int(data.get('confidence', 0)*100)}%)")
+            elif ev == "proctor_abort":
+                print(f"\n[ABORTED] {data}")
+            elif ev == "completed":
+                print(f"\n[DONE] Completed {data.get('total_answered')} questions in {data.get('duration')}s.")
+            elif ev == "error":
+                print(f"\n[ERROR] {data}")
+
+        res = agent.run_quiz(opportunity_url=args.quiz, headless=False, update_callback=_cli_cb)
+        print(f"\nFinal Status: {res.status.upper()}")
+        print(f"Questions Submitted: {res.answers_submitted}")
+        print(f"Average Confidence: {int(res.average_confidence * 100)}%")
+        print(f"Duration: {res.duration_seconds}s")
+        if res.error_message:
+            print(f"Details: {res.error_message}")
+        return 0 if res.status == "completed" else 1
 
     if args.discover:
         print("Starting non-interactive opportunity discovery crawl...")

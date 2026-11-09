@@ -39,6 +39,7 @@ class MasterAgent:
         "analyze_opportunity": "AI analysis of a specific opportunity",
         "list_opportunities": "List stored opportunities with optional filters",
         "check_system": "Check system health (database, Ollama, browser)",
+        "solve_live_quiz": "Autonomous execution and solving of an Unstop live quiz assessment",
     }
 
     def __init__(self) -> None:
@@ -336,3 +337,33 @@ class MasterAgent:
             health["overall"] = "unhealthy"
 
         return health
+
+    def _tool_solve_live_quiz(self, **kwargs: Any) -> dict:
+        """Run the autonomous live quiz solver."""
+        from agents.quiz_agent import LiveQuizAgent
+
+        opportunity_url = kwargs.get("opportunity_url")
+        opportunity_id = kwargs.get("opportunity_id")
+        headless = kwargs.get("headless", False)
+        callback = kwargs.get("callback")
+
+        agent = LiveQuizAgent()
+        if opportunity_id:
+            result = agent.run_quiz_by_id(
+                opportunity_id=opportunity_id, headless=headless, update_callback=callback
+            )
+        elif opportunity_url:
+            result = agent.run_quiz(
+                opportunity_url=opportunity_url, headless=headless, update_callback=callback
+            )
+        else:
+            return {"error": "Either 'opportunity_id' or 'opportunity_url' must be provided."}
+
+        return {
+            "tool": "solve_live_quiz",
+            "status": result.status,
+            "questions_submitted": result.answers_submitted,
+            "duration_seconds": result.duration_seconds,
+            "average_confidence": result.average_confidence,
+            "error_message": result.error_message,
+        }

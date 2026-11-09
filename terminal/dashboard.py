@@ -840,10 +840,11 @@ class Dashboard:
             menu_table.add_row("1", "Quick Practice Assessment", "Take a timed or untimed practice MCQ test with instant feedback")
             menu_table.add_row("2", "Generate MCQs for Opportunity", "Use Qwen 2.5 7B to generate tailored questions from competition briefs")
             menu_table.add_row("3", "Performance & Weak Topics", "View overall accuracy, breakdown by domain, and weak areas")
-            menu_table.add_row("4", "Return to Main Menu", "Go back to the main dashboard")
+            menu_table.add_row("4", "Live Quiz Autopilot", "AgentX autonomous screen control: solves & submits live Unstop quizzes in real time")
+            menu_table.add_row("5", "Return to Main Menu", "Go back to the main dashboard")
 
             console.print(menu_table)
-            choice = console.input("\n[bold cyan]Select an option [1-4] > [/bold cyan]").strip()
+            choice = console.input("\n[bold cyan]Select an option [1-5] > [/bold cyan]").strip()
 
             if choice == "1":
                 self._run_quiz_practice_test()
@@ -851,10 +852,12 @@ class Dashboard:
                 self._generate_quiz_from_opportunity()
             elif choice == "3":
                 self._view_quiz_analytics()
-            elif choice in ("4", "b", "q", "back"):
+            elif choice == "4":
+                self._run_live_quiz_autopilot()
+            elif choice in ("5", "b", "q", "back"):
                 break
             else:
-                print_warning("Invalid choice. Please select 1, 2, 3, or 4.")
+                print_warning("Invalid choice. Please select 1, 2, 3, 4, or 5.")
                 time.sleep(1.0)
 
     def _run_quiz_practice_test(self) -> None:
@@ -1044,6 +1047,143 @@ class Dashboard:
 
             console.print(sess_table)
 
+        console.input("\n[dim]Press Enter to return to Quiz Laboratory...[/dim]")
+
+    def _run_live_quiz_autopilot(self) -> None:
+        """Execute autonomous live Unstop quiz assessment with real-time HUD."""
+        console.clear()
+        console.print(Panel(
+            "[bold bright_white]AGENTX LIVE QUIZ AUTOPILOT[/bold bright_white]\n"
+            "[dim]Autonomous Browser Control • Real-Time Qwen 2.5 7B Question Solving • Automatic Submission[/dim]",
+            border_style="magenta",
+        ))
+
+        # Check Ollama and Browser prerequisites
+        with console.status("[cyan]Verifying system readiness...[/cyan]"):
+            from agents.llm_client import OllamaClient
+            llm = OllamaClient()
+            llm_ok = llm.health_check()
+            model_ok = llm.check_model() if llm_ok else False
+
+        if not (llm_ok and model_ok):
+            print_error("Local Ollama Qwen 2.5 7B model is offline. Please ensure 'ollama serve' is active.")
+            console.input("\n[dim]Press Enter to return...[/dim]")
+            return
+
+        # Query opportunities for quiz candidates
+        from agents.quiz_agent import LiveQuizAgent
+        with get_session() as session:
+            stmt = select(Opportunity).where(
+                (Opportunity.category.ilike("%quiz%")) |
+                (Opportunity.category.ilike("%assessment%")) |
+                (Opportunity.category.ilike("%competition%"))
+            ).limit(8)
+            opps = session.scalars(stmt).all()
+
+        console.print("\n[bold white]Select Target Assessment:[/bold white]")
+        opp_table = Table(box=box.SIMPLE_HEAVY)
+        opp_table.add_column("#", style="cyan", width=4)
+        opp_table.add_column("Title", style="bold white", width=36)
+        opp_table.add_column("Category", style="dim", width=14)
+        opp_table.add_column("URL", style="dim")
+
+        for idx, o in enumerate(opps, 1):
+            opp_table.add_row(str(idx), o.title[:35], o.category or "quiz", o.url[:50])
+
+        console.print(opp_table)
+        console.print("\n[bold cyan]Choose # from table, or type 'u' to enter a custom Unstop quiz URL, or 'b' to back:[/bold cyan]")
+        choice = console.input("[bold cyan]> [/bold cyan]").strip()
+
+        if choice in ("b", "back", "q"):
+            return
+
+        target_url = ""
+        if choice.lower() == "u":
+            target_url = console.input("\n[bold yellow]Enter direct Unstop Quiz/Assessment URL: [/bold yellow]").strip()
+            if not target_url.startswith("http"):
+                print_error("Invalid URL format.")
+                time.sleep(1.0)
+                return
+        else:
+            try:
+                sel_idx = int(choice) - 1
+                if 0 <= sel_idx < len(opps):
+                    target_url = opps[sel_idx].url
+                else:
+                    print_warning("Invalid selection number.")
+                    time.sleep(1.0)
+                    return
+            except ValueError:
+                print_warning("Invalid input.")
+                time.sleep(1.0)
+                return
+
+        console.clear()
+        console.print(Panel(
+            f"[bold white]TARGET ASSESSMENT:[/bold white] [cyan]{target_url}[/cyan]\n\n"
+            "[bold red]SAFETY & POLICY GATES:[/bold red]\n"
+            "• A visible Chromium browser window will launch on your screen.\n"
+            "• AgentX will autonomously navigate, read questions, evaluate answers via Qwen 2.5 7B, and click choices.\n"
+            "• [bold yellow]Proctoring Guard:[/bold yellow] If webcam or proctoring software is detected, AgentX will immediately abort.\n"
+            "• You can take manual control or close the window at any moment.\n",
+            title="[bold magenta]PRE-FLIGHT AUTHORIZATION[/bold magenta]",
+            border_style="magenta",
+        ))
+
+        if not confirm_action("Authorize AgentX to begin autonomous screen control?", default=False):
+            print_info("Operation cancelled by user.")
+            time.sleep(1.0)
+            return
+
+        console.print("\n[bold green]Launching AgentX Live Quiz Autopilot...[/bold green]\n")
+
+        def _terminal_callback(event: dict[str, Any]) -> None:
+            ev_type = event.get("event")
+            data = event.get("data")
+            if ev_type == "status":
+                console.print(f"[dim]⚡ [cyan]{data}[/cyan][/dim]")
+            elif ev_type == "question_scraped":
+                q_num = data.get("number", 1)
+                q_tot = data.get("total", 1)
+                q_text = data.get("text", "")[:100]
+                q_timer = data.get("timer", "N/A")
+                console.print(f"\n[bold yellow]━━━━━━━━ Question {q_num}/{q_tot} (Timer: {q_timer}) ━━━━━━━━[/bold yellow]")
+                console.print(f"[bold white]{q_text}[/bold white]")
+            elif ev_type == "answer_decided":
+                c_idx = data.get("chosen_index", 0)
+                c_opt = data.get("chosen_option", "")
+                conf = data.get("confidence", 0.0)
+                rat = data.get("rationale", "")
+                conf_pct = int(conf * 100)
+                bar = "█" * (conf_pct // 10) + "░" * (10 - (conf_pct // 10))
+                console.print(f"  [bold green]➜ Chosen [[{c_idx}]]: {c_opt}[/bold green] (Conf: [{bar}] {conf_pct}%)")
+                if rat:
+                    console.print(f"  [dim]Rationale: {rat}[/dim]")
+            elif ev_type == "proctor_abort":
+                print_error(f"Proctoring Abort: {data}")
+            elif ev_type == "completed":
+                print_success(f"Assessment Finished: {data.get('total_answered')} questions completed in {data.get('duration')}s!")
+            elif ev_type == "error":
+                print_error(f"Error: {data}")
+
+        agent = LiveQuizAgent()
+        result = agent.run_quiz(
+            opportunity_url=target_url,
+            headless=False,
+            update_callback=_terminal_callback,
+        )
+
+        console.print("\n")
+        res_panel = Panel(
+            f"[bold white]Status:[/bold white] [{ 'green' if result.status == 'completed' else 'red' }]{result.status.upper()}[/]\n"
+            f"[bold white]Questions Submitted:[/bold white] {result.answers_submitted}\n"
+            f"[bold white]Average AI Confidence:[/bold white] {int(result.average_confidence * 100)}%\n"
+            f"[bold white]Total Duration:[/bold white] {result.duration_seconds}s\n"
+            + (f"[bold red]Message:[/bold red] {result.error_message}\n" if result.error_message else ""),
+            title="[bold magenta]LIVE ASSESSMENT SUMMARY[/bold magenta]",
+            border_style="magenta",
+        )
+        console.print(res_panel)
         console.input("\n[dim]Press Enter to return to Quiz Laboratory...[/dim]")
 
     def _presentation_studio(self) -> None:

@@ -120,8 +120,13 @@ QUIZ_POLICIES: list[ActionPolicy] = [
     ),
     ActionPolicy(
         action="live_assessment",
-        approval_level=ApprovalLevel.STRICT_CONFIRM,
-        description="Any interaction with a live proctored assessment — BLOCKED by default",
+        approval_level=ApprovalLevel.CONFIRM,
+        description="Autonomous or assisted interaction with an unproctored live assessment",
+    ),
+    ActionPolicy(
+        action="autonomous_quiz_solving",
+        approval_level=ApprovalLevel.CONFIRM,
+        description="Autonomous real-time question solving and answer selection",
     ),
 ]
 
@@ -181,7 +186,6 @@ class SecurityPolicy:
         "bypass_rate_limit",
         "bypass_anti_bot",
         "store_password",
-        "auto_submit_live_assessment",
         "follow_scraped_instructions",
     ])
 

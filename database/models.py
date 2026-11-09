@@ -195,6 +195,40 @@ class QuizSession(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
+    live_attempts: Mapped[list["LiveQuizAttempt"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
+
+
+class LiveQuizAttempt(Base):
+    """Tracks questions, AI decisions, and answers in live quiz sessions."""
+    __tablename__ = "live_quiz_attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("quiz_sessions.id"), nullable=True
+    )
+    question_number: Mapped[int] = mapped_column(Integer, default=1)
+    question_text: Mapped[str] = mapped_column(Text, nullable=False)
+    options_json: Mapped[str] = mapped_column(Text, default="[]")
+    chosen_option: Mapped[str] = mapped_column(String(500), default="")
+    chosen_index: Mapped[int] = mapped_column(Integer, default=0)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    time_remaining_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    session: Mapped[Optional["QuizSession"]] = relationship(back_populates="live_attempts")
+
+    def get_options(self) -> list[str]:
+        try:
+            return json.loads(self.options_json)
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def set_options(self, opts: list[str]) -> None:
+        self.options_json = json.dumps(opts)
+
 
 class GeneratedDocument(Base):
     """Tracks generated presentations and documents."""
