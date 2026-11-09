@@ -200,7 +200,7 @@ class BrowserManager:
         try:
             current_url = page.url
             if "unstop.com" not in current_url:
-                page.goto("https://unstop.com", wait_until="domcontentloaded")
+                page.goto("https://unstop.com", wait_until="domcontentloaded", timeout=25000)
                 page.wait_for_timeout(1500)
 
             # 1. Negative check: if a primary login button is actively rendered, user is unauthenticated
@@ -211,6 +211,8 @@ class BrowserManager:
 
             # 2. Positive check: inspect logged-in DOM indicators
             logged_in_selectors = [
+                "img[alt*='User avatar' i]",
+                "img[alt*='avatar' i]",
                 "un-user-avatar",
                 ".user-profile",
                 "a[href*='/user/']",
@@ -258,8 +260,16 @@ class BrowserManager:
         import time as _time
 
         logger.info("Initiating interactive login detection (timeout: %ds)...", timeout_seconds)
-        if "unstop.com/auth/login" not in page.url and "unstop.com/login" not in page.url:
-            page.goto("https://unstop.com/auth/login", wait_until="domcontentloaded")
+        if "unstop.com" not in page.url:
+            page.goto("https://unstop.com", wait_until="domcontentloaded", timeout=25000)
+
+        # Trigger the login modal if login button exists and is visible
+        try:
+            login_btn = page.query_selector(".login_btn, [class*='login_btn'], button:has-text('Login')")
+            if login_btn and login_btn.is_visible():
+                login_btn.click()
+        except Exception:
+            pass
 
         start = _time.time()
         while _time.time() - start < timeout_seconds:

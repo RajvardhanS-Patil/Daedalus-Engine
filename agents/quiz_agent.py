@@ -126,7 +126,14 @@ class LiveQuizAgent:
             self.browser_manager.launch(headless=headless)
             page = self.browser_manager.new_page()
 
-            # 1. Verify Authentication
+            # 1. Directly navigate to target Opportunity URL first
+            self._notify(update_callback, "status", f"Navigating to {opportunity_url}...")
+            if not self.driver.navigate_to_quiz(opportunity_url, page):
+                result.status = "error"
+                result.error_message = "Failed to load quiz assessment page."
+                return result
+
+            # 2. Verify Authentication on target page
             self._notify(update_callback, "status", "Verifying Unstop login session...")
             if not self.browser_manager.check_login_status(page):
                 if not headless:
@@ -142,6 +149,8 @@ class LiveQuizAgent:
                         self._notify(update_callback, "error", result.error_message)
                         return result
                     self._notify(update_callback, "status", "Authentication confirmed! Resuming autonomous control...")
+                    if opportunity_url not in page.url:
+                        self.driver.navigate_to_quiz(opportunity_url, page)
                 else:
                     logger.warning("User is not logged into Unstop.")
                     result.status = "login_required"
@@ -151,13 +160,6 @@ class LiveQuizAgent:
                     )
                     self._notify(update_callback, "error", result.error_message)
                     return result
-
-            # 2. Navigate to Assessment or Competition
-            self._notify(update_callback, "status", f"Navigating to {opportunity_url}...")
-            if not self.driver.navigate_to_quiz(opportunity_url, page):
-                result.status = "error"
-                result.error_message = "Failed to load quiz assessment page."
-                return result
 
             # 3. Inject glowing visual AI cursor
             self.driver.inject_visual_cursor(page)
