@@ -22,7 +22,7 @@ def test_registration_policies():
 
     terms_policy = get_policy("accept_terms")
     assert terms_policy is not None
-    assert terms_policy.approval_level == ApprovalLevel.STRICT_CONFIRM
+    assert terms_policy.approval_level == ApprovalLevel.AUTONOMOUS
 
     final_sub_policy = get_policy("final_submission")
     assert final_sub_policy is not None

@@ -85,6 +85,12 @@ def parse_args() -> argparse.Namespace:
         help="Launch visible browser window to log in and save your Unstop account session",
     )
     parser.add_argument(
+        "--agentx",
+        type=str,
+        metavar="URL",
+        help="Launch AgentX Complete Autonomous Screen Control Agent on any Unstop URL (auto-register, round entry, live quiz solving, persistent desktop session)",
+    )
+    parser.add_argument(
         "--quiz",
         type=str,
         metavar="URL",
@@ -140,10 +146,11 @@ def main() -> int:
             print("Browser closed cleanly.")
         return 0
 
-    if args.quiz:
+    target_agent_url = args.agentx or args.quiz
+    if target_agent_url:
         from agents.quiz_agent import LiveQuizAgent
 
-        print(f"Launching AgentX Autonomous Live Quiz Solver on {args.quiz}...")
+        print(f"Launching AgentX Autonomous Screen Control Agent on {target_agent_url}...")
         agent = LiveQuizAgent()
 
         def _cli_cb(event):
@@ -162,14 +169,14 @@ def main() -> int:
             elif ev == "error":
                 print(f"\n[ERROR] {data}")
 
-        res = agent.run_quiz(opportunity_url=args.quiz, headless=False, update_callback=_cli_cb)
+        res = agent.run_agentx(opportunity_url=target_agent_url, headless=False, update_callback=_cli_cb)
         print(f"\nFinal Status: {res.status.upper()}")
         print(f"Questions Submitted: {res.answers_submitted}")
         print(f"Average Confidence: {int(res.average_confidence * 100)}%")
         print(f"Duration: {res.duration_seconds}s")
         if res.error_message:
             print(f"Details: {res.error_message}")
-        return 0 if res.status == "completed" else 1
+        return 0 if res.status in ("completed", "active_session") else 1
 
     if args.discover:
         print("Starting non-interactive opportunity discovery crawl...")

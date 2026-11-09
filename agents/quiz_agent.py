@@ -77,11 +77,33 @@ class LiveQuizAgent:
             update_callback=update_callback,
         )
 
+    def run_agentx(
+        self,
+        opportunity_url: str,
+        headless: bool = False,
+        update_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+    ) -> QuizRunResult:
+        """Universal AgentX Autonomous Screen Control entry point.
+
+        Maintains persistent browser control on the user's desktop:
+        - Auto-registers for competitions (zero approvals)
+        - Detects stages & enters active assessments
+        - Solves questions via Qwen 2.5 7B & submits
+        - Keeps browser open on desktop with continuous screen monitoring & co-pilot prompt
+        """
+        return self.run_quiz(
+            opportunity_url=opportunity_url,
+            headless=headless,
+            keep_alive=True,
+            update_callback=update_callback,
+        )
+
     def run_quiz(
         self,
         opportunity_url: str,
         headless: bool = False,
         max_questions: int = 100,
+        keep_alive: bool = False,
         update_callback: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> QuizRunResult:
         """Run the end-to-end autonomous quiz-solving workflow.
@@ -90,6 +112,7 @@ class LiveQuizAgent:
             opportunity_url: Direct URL to the Unstop assessment or competition.
             headless: Whether to run Chromium headlessly (default: False for live screen control).
             max_questions: Safety upper bound on questions to prevent infinite loops.
+            keep_alive: Whether to keep browser open and enter persistent interactive co-pilot mode.
             update_callback: Optional hook for real-time progress events.
 
         Returns:
@@ -115,7 +138,7 @@ class LiveQuizAgent:
                 self._notify(update_callback, "error", result.error_message)
                 return result
 
-            # 2. Navigate to Assessment
+            # 2. Navigate to Assessment or Competition
             self._notify(update_callback, "status", f"Navigating to {opportunity_url}...")
             if not self.driver.navigate_to_quiz(opportunity_url, page):
                 result.status = "error"
@@ -152,13 +175,14 @@ class LiveQuizAgent:
             # 7. Live Screen Observation Loop (wait for quiz questions to be active)
             page = self._wait_for_live_questions(
                 page=page,
-                timeout_seconds=30,
+                timeout_seconds=30 if not keep_alive else 8,
                 update_callback=update_callback,
             )
 
             # Check if questions were found
             if not self.driver._has_visible_questions(page):
-                page_status = self.driver.detect_page_status(page)
+                overview = self.driver.detect_competition_overview(page)
+                page_status = overview.get("status_message") or self.driver.detect_page_status(page)
                 if page_status:
                     result.status = "not_active"
                     result.error_message = f"Assessment is not live right now. {page_status}"
@@ -169,125 +193,31 @@ class LiveQuizAgent:
                         "No active quiz questions detected on screen. "
                         "The assessment may not be open yet or requires manual registration."
                     )
-                self._notify(update_callback, "error", result.error_message)
+                self._notify(update_callback, "status" if keep_alive else "error", result.error_message)
+
+                if keep_alive and not headless:
+                    self._persistent_copilot_loop(page, update_callback)
+                    result.status = "active_session"
+                    return result
+
                 return result
 
-            # 6. Initialize Database Session
+            # 8. Initialize Database Session
             session_id = self._create_db_session(opportunity_url)
             result.session_id = session_id
             self._notify(update_callback, "status", "Questions detected! Beginning autonomous test solving...")
 
-            # 7. Autonomous Solving Loop
-            seen_questions: set[str] = set()
-            attempts: list[dict[str, Any]] = []
-            confidences: list[float] = []
+            # 9. Autonomous Solving Loop
+            attempts = self._solve_assessment_loop(
+                page=page,
+                session_id=session_id,
+                max_questions=max_questions,
+                update_callback=update_callback,
+            )
 
-            for q_idx in range(1, max_questions + 1):
-                page.wait_for_timeout(1000)
-
-                # Keep page reference updated to the active tab
-                page = self._get_active_quiz_page(page)
-
-                # Check if test completed
-                if self.driver.is_quiz_completed(page):
-                    logger.info("Quiz completion detected on page.")
-                    break
-
-                # Scrape current active question
-                scraped = self.driver.scrape_current_question(page)
-
-                # Termination check: empty options or repeated question with no progress
-                if not scraped.options:
-                    page.wait_for_timeout(2500)
-                    scraped = self.driver.scrape_current_question(page)
-                    if not scraped.options:
-                        if self.driver.is_quiz_completed(page):
-                            logger.info("Quiz reached completion screen.")
-                        else:
-                            logger.warning("Options remain unavailable. Finishing assessment loop.")
-                        break
-
-                q_key = scraped.question_text[:80].strip()
-                if q_key in seen_questions:
-                    logger.warning("Encountered repeated question '%s'. Attempting to click Next...", q_key)
-                    if not self.driver.click_next(page):
-                        break
-                    continue
-                seen_questions.add(q_key)
-
-                # Notify UI of question arrival
-                self._notify(
-                    update_callback,
-                    "question_scraped",
-                    {
-                        "number": scraped.question_number,
-                        "total": scraped.total_questions,
-                        "text": scraped.question_text,
-                        "options": scraped.options,
-                        "timer": scraped.raw_timer_text,
-                    },
-                )
-
-                # Solve question via Qwen 2.5 7B
-                self._notify(update_callback, "status", f"Evaluating question #{scraped.question_number} with Qwen 2.5 7B...")
-                decision = self.solver.solve_with_fallback(
-                    question=scraped.question_text,
-                    options=scraped.options,
-                )
-
-                confidences.append(decision.confidence)
-
-                # Notify UI of decision
-                self._notify(
-                    update_callback,
-                    "answer_decided",
-                    {
-                        "number": scraped.question_number,
-                        "chosen_index": decision.chosen_index,
-                        "chosen_option": decision.chosen_option,
-                        "confidence": decision.confidence,
-                        "rationale": decision.rationale,
-                    },
-                )
-
-                # Click selected option on screen
-                self._notify(update_callback, "status", f"Selecting option [{decision.chosen_index}] on screen...")
-                clicked = self.driver.select_option(page, decision.chosen_index)
-
-                # Human-like delay
-                self._human_delay()
-
-                # Record attempt in database
-                self._record_attempt(
-                    session_id=session_id,
-                    q_num=scraped.question_number,
-                    q_text=scraped.question_text,
-                    options=scraped.options,
-                    decision=decision,
-                    timer_secs=scraped.time_remaining_seconds,
-                )
-
-                attempts.append({
-                    "question_number": scraped.question_number,
-                    "question_text": scraped.question_text,
-                    "chosen_option": decision.chosen_option,
-                    "chosen_index": decision.chosen_index,
-                    "confidence": decision.confidence,
-                    "rationale": decision.rationale,
-                })
-
-                # Advance or Submit
-                if scraped.is_last_question or q_idx >= scraped.total_questions:
-                    self._notify(update_callback, "status", "Final question reached. Submitting assessment...")
-                    submitted = self.driver.click_submit_quiz(page)
-                    page.wait_for_timeout(2000)
-                    break
-                else:
-                    self._notify(update_callback, "status", "Moving to next question...")
-                    self.driver.click_next(page)
-
-            # 8. Finalize Results
+            # 10. Finalize Results
             duration = time.time() - start_time
+            confidences = [a.get("confidence", 0.0) for a in attempts]
             avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
 
             result.total_questions_encountered = len(attempts)
@@ -295,6 +225,7 @@ class LiveQuizAgent:
             result.average_confidence = round(avg_conf, 2)
             result.duration_seconds = round(duration, 1)
             result.attempts = attempts
+            result.status = "completed"
 
             self._finalize_db_session(session_id, len(attempts), duration)
 
@@ -303,6 +234,9 @@ class LiveQuizAgent:
                 "duration": result.duration_seconds,
                 "avg_confidence": result.average_confidence,
             })
+
+            if keep_alive and not headless:
+                self._persistent_copilot_loop(page, update_callback)
 
             return result
 
@@ -315,10 +249,196 @@ class LiveQuizAgent:
             return result
 
         finally:
-            if not headless:
-                # Retain browser briefly on screen so user can see final status
+            if not headless and not keep_alive:
                 time.sleep(4)
-            self.browser_manager.close()
+                self.browser_manager.close()
+            elif headless:
+                self.browser_manager.close()
+
+    def _solve_assessment_loop(
+        self,
+        page: Any,
+        session_id: int,
+        max_questions: int = 100,
+        update_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+    ) -> list[dict[str, Any]]:
+        """Core loop scraping and answering active test questions on screen."""
+        seen_questions: set[str] = set()
+        attempts: list[dict[str, Any]] = []
+
+        for q_idx in range(1, max_questions + 1):
+            page.wait_for_timeout(1000)
+
+            # Keep page reference updated to the active tab
+            page = self._get_active_quiz_page(page)
+
+            # Check if test completed
+            if self.driver.is_quiz_completed(page):
+                logger.info("Quiz completion detected on page.")
+                break
+
+            # Scrape current active question
+            scraped = self.driver.scrape_current_question(page)
+
+            # Termination check: empty options or repeated question with no progress
+            if not scraped.options:
+                page.wait_for_timeout(2500)
+                scraped = self.driver.scrape_current_question(page)
+                if not scraped.options:
+                    if self.driver.is_quiz_completed(page):
+                        logger.info("Quiz reached completion screen.")
+                    else:
+                        logger.warning("Options remain unavailable. Finishing assessment loop.")
+                    break
+
+            q_key = scraped.question_text[:80].strip()
+            if q_key in seen_questions:
+                logger.warning("Encountered repeated question '%s'. Attempting to click Next...", q_key)
+                if not self.driver.click_next(page):
+                    break
+                continue
+            seen_questions.add(q_key)
+
+            # Notify UI of question arrival
+            self._notify(
+                update_callback,
+                "question_scraped",
+                {
+                    "number": scraped.question_number,
+                    "total": scraped.total_questions,
+                    "text": scraped.question_text,
+                    "options": scraped.options,
+                    "timer": scraped.raw_timer_text,
+                },
+            )
+
+            # Solve question via Qwen 2.5 7B
+            self._notify(update_callback, "status", f"Evaluating question #{scraped.question_number} with Qwen 2.5 7B...")
+            decision = self.solver.solve_with_fallback(
+                question=scraped.question_text,
+                options=scraped.options,
+            )
+
+            # Notify UI of decision
+            self._notify(
+                update_callback,
+                "answer_decided",
+                {
+                    "number": scraped.question_number,
+                    "chosen_index": decision.chosen_index,
+                    "chosen_option": decision.chosen_option,
+                    "confidence": decision.confidence,
+                    "rationale": decision.rationale,
+                },
+            )
+
+            # Click selected option on screen using visual AI cursor
+            self._notify(update_callback, "status", f"Selecting option [{decision.chosen_index}] on screen...")
+            self.driver.select_option(page, decision.chosen_index)
+
+            # Human-like delay
+            self._human_delay()
+
+            # Record attempt in database
+            self._record_attempt(
+                session_id=session_id,
+                q_num=scraped.question_number,
+                q_text=scraped.question_text,
+                options=scraped.options,
+                decision=decision,
+                timer_secs=scraped.time_remaining_seconds,
+            )
+
+            attempts.append({
+                "question_number": scraped.question_number,
+                "question_text": scraped.question_text,
+                "chosen_option": decision.chosen_option,
+                "chosen_index": decision.chosen_index,
+                "confidence": decision.confidence,
+                "rationale": decision.rationale,
+            })
+
+            # Advance or Submit
+            if scraped.is_last_question or q_idx >= scraped.total_questions:
+                self._notify(update_callback, "status", "Final question reached. Submitting assessment...")
+                self.driver.click_submit_quiz(page)
+                page.wait_for_timeout(2000)
+                break
+            else:
+                self._notify(update_callback, "status", "Moving to next question...")
+                self.driver.click_next(page)
+
+        return attempts
+
+    def _persistent_copilot_loop(
+        self,
+        page: Any,
+        update_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+    ) -> None:
+        """Hold browser open on screen with continuous live monitoring & user control prompt."""
+        self._notify(
+            update_callback,
+            "status",
+            "AgentX is keeping the browser open on your desktop. Full autonomous screen control active.",
+        )
+        print("\n" + "=" * 70)
+        print("  AGENTX PERSISTENT SCREEN CONTROL ACTIVE")
+        print("  • Browser is open on your desktop with glowing AI visual cursor.")
+        print("  • If you navigate or open an assessment, AgentX will solve it autonomously.")
+        print("  • Commands:")
+        print("      [Enter]      : Re-scan active screen & check for live questions/rounds")
+        print("      u <url>      : Navigate browser to a new Unstop competition/quiz URL")
+        print("      r            : Re-run auto-registration on the current page")
+        print("      q            : Close browser and exit AgentX")
+        print("=" * 70 + "\n")
+
+        while True:
+            try:
+                cmd = input("AgentX Screen Control [Enter to scan / q to exit] > ").strip()
+                if cmd.lower() in ("q", "quit", "exit"):
+                    print("[*] Exiting AgentX. Closing browser...")
+                    self.browser_manager.close()
+                    break
+
+                if cmd.lower().startswith("u "):
+                    new_url = cmd[2:].strip()
+                    if new_url.startswith("http"):
+                        print(f"[*] Navigating AgentX to: {new_url}...")
+                        active_p = self._get_active_quiz_page(page)
+                        active_p.goto(new_url, wait_until="domcontentloaded")
+                        self.driver.inject_visual_cursor(active_p)
+                        self.driver.auto_register_if_needed(active_p)
+                        active_p = self.driver.find_and_enter_assessment(active_p)
+                        page = active_p
+                    else:
+                        print("[!] Please provide a valid URL starting with http:// or https://")
+                    continue
+
+                if cmd.lower() == "r":
+                    active_p = self._get_active_quiz_page(page)
+                    print("[*] Re-checking autonomous registration on active page...")
+                    done = self.driver.auto_register_if_needed(active_p)
+                    print(f"[*] Registration status: {'Completed/Already Registered' if done else 'No registration form found'}")
+                    continue
+
+                # Default Enter: scan current page
+                active_p = self._get_active_quiz_page(page)
+                self.driver.inject_visual_cursor(active_p)
+                if self.driver._has_visible_questions(active_p):
+                    print("[*] Active quiz questions detected on screen! Starting autonomous test solver...")
+                    sess_id = self._create_db_session(active_p.url)
+                    self._solve_assessment_loop(active_p, session_id=sess_id, max_questions=100, update_callback=update_callback)
+                else:
+                    overview = self.driver.detect_competition_overview(active_p)
+                    print(f"[*] Current Page: {overview.get('title') or active_p.title()}")
+                    print(f"[*] Registered: {overview.get('is_registered')}")
+                    print(f"[*] Status: {overview.get('status_message') or 'Monitoring page for changes'}")
+            except (KeyboardInterrupt, EOFError):
+                print("\n[*] Received exit signal. Closing browser...")
+                self.browser_manager.close()
+                break
+            except Exception as exc:
+                logger.error("Error in screen control loop: %s", exc)
 
     # ─── Internal Helpers ─────────────────────────────────────────────────────
 

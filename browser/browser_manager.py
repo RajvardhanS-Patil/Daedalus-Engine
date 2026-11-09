@@ -71,9 +71,13 @@ class BrowserManager:
         try:
             self._playwright = sync_playwright().start()
 
+            resolved_slow_mo = settings.browser.slow_mo
+            if not resolved_headless and resolved_slow_mo == 0:
+                resolved_slow_mo = 250
+
             launch_kwargs: dict = {
                 "headless": resolved_headless,
-                "slow_mo": settings.browser.slow_mo,
+                "slow_mo": resolved_slow_mo,
                 "args": [
                     "--disable-blink-features=AutomationControlled",
                     "--no-first-run",
@@ -94,6 +98,103 @@ class BrowserManager:
             # Set the default navigation / action timeout.
             context.set_default_timeout(settings.browser.timeout)
             context.set_default_navigation_timeout(settings.browser.timeout)
+
+            # Inject glowing AI visual cursor across all pages in headed mode
+            if not resolved_headless:
+                cursor_script = """
+                (() => {
+                    function setupCursor() {
+                        if (document.getElementById('agentx-cursor')) return;
+                        const style = document.createElement('style');
+                        style.textContent = `
+                            #agentx-cursor {
+                                position: fixed;
+                                width: 20px;
+                                height: 20px;
+                                border-radius: 50%;
+                                background: radial-gradient(circle, #ff0055 40%, rgba(255, 0, 85, 0.4) 75%, transparent 100%);
+                                box-shadow: 0 0 12px #ff0055, 0 0 24px rgba(255, 0, 85, 0.9);
+                                pointer-events: none;
+                                z-index: 2147483647;
+                                transform: translate(-50%, -50%);
+                                transition: left 0.08s ease-out, top 0.08s ease-out;
+                            }
+                            #agentx-ring {
+                                position: fixed;
+                                width: 40px;
+                                height: 40px;
+                                border-radius: 50%;
+                                border: 2px solid #00f0ff;
+                                box-shadow: 0 0 12px #00f0ff;
+                                pointer-events: none;
+                                z-index: 2147483646;
+                                transform: translate(-50%, -50%);
+                                transition: left 0.14s ease-out, top 0.14s ease-out, transform 0.15s ease;
+                            }
+                            #agentx-label {
+                                position: fixed;
+                                background: rgba(8, 8, 16, 0.9);
+                                color: #00f0ff;
+                                font-family: monospace;
+                                font-size: 11px;
+                                font-weight: bold;
+                                padding: 2px 7px;
+                                border-radius: 4px;
+                                border: 1px solid #00f0ff;
+                                box-shadow: 0 0 8px rgba(0, 240, 255, 0.4);
+                                pointer-events: none;
+                                z-index: 2147483647;
+                                transform: translate(16px, -16px);
+                                transition: left 0.14s ease-out, top 0.14s ease-out;
+                                letter-spacing: 0.5px;
+                            }
+                        `;
+                        const parent = document.head || document.documentElement;
+                        parent.appendChild(style);
+
+                        const cursor = document.createElement('div');
+                        cursor.id = 'agentx-cursor';
+                        const ring = document.createElement('div');
+                        ring.id = 'agentx-ring';
+                        const label = document.createElement('div');
+                        label.id = 'agentx-label';
+                        label.textContent = 'AgentX AI';
+
+                        const b = document.body || document.documentElement;
+                        b.appendChild(cursor);
+                        b.appendChild(ring);
+                        b.appendChild(label);
+                    }
+
+                    window.addEventListener('mousemove', (e) => {
+                        const c = document.getElementById('agentx-cursor');
+                        const r = document.getElementById('agentx-ring');
+                        const l = document.getElementById('agentx-label');
+                        if (c) { c.style.left = e.clientX + 'px'; c.style.top = e.clientY + 'px'; }
+                        if (r) { r.style.left = e.clientX + 'px'; r.style.top = e.clientY + 'px'; }
+                        if (l) { l.style.left = e.clientX + 'px'; l.style.top = e.clientY + 'px'; }
+                    }, { passive: true });
+
+                    window.addEventListener('click', (e) => {
+                        const r = document.getElementById('agentx-ring');
+                        if (r) {
+                            r.style.transform = 'translate(-50%, -50%) scale(1.8)';
+                            r.style.borderColor = '#ff0055';
+                            setTimeout(() => {
+                                r.style.transform = 'translate(-50%, -50%) scale(1.0)';
+                                r.style.borderColor = '#00f0ff';
+                            }, 220);
+                        }
+                    }, { passive: true });
+
+                    if (document.readyState === 'loading') {
+                        document.addEventListener('DOMContentLoaded', setupCursor);
+                    } else {
+                        setupCursor();
+                    }
+                })();
+                """
+                context.add_init_script(cursor_script)
 
             self._browser = context
             self._context = context

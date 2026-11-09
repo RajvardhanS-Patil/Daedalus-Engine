@@ -143,10 +143,16 @@ class QuizDriver:
         "button:has-text('Enter')",
         "a:has-text('Enter')",
         "button:has-text('Join Round')",
+        "button:has-text('Participate Now')",
         "button:has-text('Go to Assessment')",
         "a:has-text('Go to Assessment')",
         "button:has-text('View Assessment')",
         "a:has-text('View Assessment')",
+        "button:has-text('Enter Assessment')",
+        "a:has-text('Enter Assessment')",
+        "button:has-text('Submit Solution')",
+        "button:has-text('Make Submission')",
+        "a:has-text('Make Submission')",
     ]
 
     STAGES_TAB_SELECTORS = [
@@ -157,6 +163,9 @@ class QuizDriver:
         "[id*='stages']",
         "button:has-text('Rounds')",
         "a:has-text('Rounds')",
+        "span:has-text('Rounds')",
+        "button:has-text('Assessment')",
+        "a:has-text('Assessment')",
     ]
 
     TIMER_SELECTORS = [
@@ -217,7 +226,7 @@ class QuizDriver:
         return False, ""
 
     def click_start_assessment(self, page: Page) -> bool:
-        """Find and trigger the initial Start / Begin Assessment CTA."""
+        """Find and trigger the initial Start / Begin Assessment CTA using visible AI cursor."""
         page.wait_for_timeout(1000)
 
         # First, accept any declaration / terms checkbox if present
@@ -225,8 +234,8 @@ class QuizDriver:
             checkboxes = page.query_selector_all("input[type='checkbox']")
             for cb in checkboxes:
                 if cb.is_visible() and not cb.is_checked():
-                    logger.info("Checking terms / instructions checkbox...")
-                    cb.check()
+                    logger.info("Checking terms / instructions checkbox with visual cursor...")
+                    self.cursor_click(page, cb)
                     page.wait_for_timeout(500)
         except Exception as exc:
             logger.debug("Terms checkbox check failed (non-fatal): %s", exc)
@@ -235,8 +244,8 @@ class QuizDriver:
             try:
                 btn = page.query_selector(selector)
                 if btn and btn.is_visible() and btn.is_enabled():
-                    logger.info("Found start button: %s. Clicking...", selector)
-                    btn.click()
+                    logger.info("Found start button: %s. Clicking with visual cursor...", selector)
+                    self.cursor_click(page, btn)
                     page.wait_for_timeout(2000)
                     return True
             except Exception as exc:
@@ -248,7 +257,7 @@ class QuizDriver:
     def find_and_enter_assessment(self, page: Page) -> Page:
         """Navigate through competition overview pages to locate and enter the live assessment.
 
-        Handles clicking round tabs, round action buttons, and switching to popup tabs.
+        Handles clicking round tabs, round action buttons, and switching to popup tabs with visual cursor.
         Returns the active assessment Page object.
         """
         # If questions already visible, we are ready
@@ -263,9 +272,8 @@ class QuizDriver:
             try:
                 el = page.query_selector(selector)
                 if el and el.is_visible():
-                    logger.info("Found round entry CTA: %s. Clicking...", selector)
-                    el.scroll_into_view_if_needed()
-                    el.click()
+                    logger.info("Found round entry CTA: %s. Clicking with visual cursor...", selector)
+                    self.cursor_click(page, el)
                     page.wait_for_timeout(2500)
                     clicked = True
                     break
@@ -278,15 +286,14 @@ class QuizDriver:
                 try:
                     tab = page.query_selector(s_sel)
                     if tab and tab.is_visible():
-                        logger.info("Clicking Stages & Timelines tab: %s", s_sel)
-                        tab.click()
+                        logger.info("Clicking Stages & Timelines tab: %s with visual cursor...", s_sel)
+                        self.cursor_click(page, tab)
                         page.wait_for_timeout(1500)
                         for r_sel in self.ROUND_BUTTON_SELECTORS:
                             el = page.query_selector(r_sel)
                             if el and el.is_visible():
                                 logger.info("Found round CTA under Stages tab: %s", r_sel)
-                                el.scroll_into_view_if_needed()
-                                el.click()
+                                self.cursor_click(page, el)
                                 page.wait_for_timeout(2500)
                                 clicked = True
                                 break
@@ -451,7 +458,7 @@ class QuizDriver:
         except Exception as exc:
             logger.debug("Visual cursor injection error (non-fatal): %s", exc)
 
-    def cursor_move_to(self, page: Page, element: ElementHandle, steps: int = 15) -> tuple[float, float]:
+    def cursor_move_to(self, page: Page, element: ElementHandle, steps: int = 20) -> tuple[float, float]:
         """Visibly and smoothly move the AI cursor to an element's center."""
         self.inject_visual_cursor(page)
         try:
@@ -462,7 +469,11 @@ class QuizDriver:
             x = box["x"] + box["width"] / 2.0
             y = box["y"] + box["height"] / 2.0
 
-            # Move visual cursor elements on screen
+            # Physical Playwright mouse movement with intermediate step events
+            page.mouse.move(x, y, steps=steps)
+            page.wait_for_timeout(80)
+
+            # Snap visual cursor elements to exact target center
             page.evaluate("""({x, y}) => {
                 const c = document.getElementById('agentx-cursor');
                 const r = document.getElementById('agentx-ring');
@@ -471,10 +482,6 @@ class QuizDriver:
                 if (r) { r.style.left = x + 'px'; r.style.top = y + 'px'; }
                 if (l) { l.style.left = x + 'px'; l.style.top = y + 'px'; }
             }""", {"x": x, "y": y})
-
-            # Physical Playwright mouse movement
-            page.mouse.move(x, y, steps=steps)
-            page.wait_for_timeout(100)
             return x, y
         except Exception as exc:
             logger.debug("Cursor move error: %s", exc)
@@ -483,9 +490,9 @@ class QuizDriver:
     def cursor_click(self, page: Page, element: ElementHandle) -> bool:
         """Move cursor to element and perform an animated physical mouse click."""
         try:
-            x, y = self.cursor_move_to(page, element, steps=12)
+            x, y = self.cursor_move_to(page, element, steps=18)
             if x > 0 and y > 0:
-                # Click pulse animation
+                # Click pulse animation on visual ring
                 page.evaluate("""() => {
                     const r = document.getElementById('agentx-ring');
                     if (r) {
@@ -517,8 +524,19 @@ class QuizDriver:
             self.cursor_click(page, element)
             element.fill("")
             page.wait_for_timeout(150)
-            element.type(text, delay=30)
+            element.type(text, delay=35)
             page.wait_for_timeout(200)
+
+            # Check if an autocomplete dropdown appeared and select first matching item
+            try:
+                opt = page.query_selector(
+                    ".mat-autocomplete-panel mat-option, .ng-dropdown-panel .ng-option, ul.typeahead li, div[role='option'], .dropdown-item"
+                )
+                if opt and opt.is_visible():
+                    self.cursor_click(page, opt)
+                    page.wait_for_timeout(300)
+            except Exception:
+                pass
         except Exception as exc:
             logger.debug("Cursor type error: %s", exc)
             try:
@@ -529,7 +547,11 @@ class QuizDriver:
     def auto_register_if_needed(self, page: Page) -> bool:
         """Autonomously fill registration details and submit without requiring user approvals."""
         is_register_page = "/register" in page.url or "/apply" in page.url
-        reg_btn = page.query_selector("button:has-text('Register'), a:has-text('Register'), button:has-text('Apply Now'), a:has-text('Apply Now')")
+        reg_btn = page.query_selector(
+            "button:has-text('Register'), a:has-text('Register'), "
+            "button:has-text('Apply Now'), a:has-text('Apply Now'), "
+            "button:has-text('Participate'), a:has-text('Participate')"
+        )
 
         already_reg = page.query_selector("button:has-text('Registered'), button:has-text('View Registration')")
         if already_reg and already_reg.is_visible():
@@ -552,75 +574,133 @@ class QuizDriver:
         copilot = RegistrationCopilot(browser_manager=self.browser_manager)
         candidate = copilot.get_candidate_profile()
 
-        # Fill visible text inputs
-        field_mappings = [
-            (["name", "full_name", "first_name"], candidate.get("name", "Rajvardhan Patil")),
-            (["college", "university", "institute", "organization"], candidate.get("college", "National Institute of Technology")),
-            (["degree", "qualification", "course"], candidate.get("degree", "B.Tech")),
-            (["year", "graduation", "batch"], candidate.get("graduation_year", "2027")),
-            (["phone", "mobile", "contact"], candidate.get("phone", "")),
-            (["city", "location"], candidate.get("city", "Mumbai")),
-        ]
+        # Multi-step form loop (handles Next -> Next -> Submit)
+        for step in range(3):
+            # Fill visible text inputs
+            field_mappings = [
+                (["name", "full_name", "first_name"], candidate.get("name", "Rajvardhan Patil")),
+                (["college", "university", "institute", "organization", "school"], candidate.get("college", "National Institute of Technology")),
+                (["degree", "qualification", "course", "major"], candidate.get("degree", "B.Tech")),
+                (["year", "graduation", "batch"], candidate.get("graduation_year", "2027")),
+                (["phone", "mobile", "contact"], candidate.get("phone", "")),
+                (["city", "location"], candidate.get("city", "Mumbai")),
+            ]
 
-        inputs = page.query_selector_all("input[type='text'], input[type='email'], input[type='tel'], input:not([type])")
-        for inp in inputs:
-            try:
-                if not inp.is_visible() or not inp.is_enabled():
-                    continue
-                val = inp.input_value()
-                if val and len(val) > 1:
-                    continue
+            inputs = page.query_selector_all("input[type='text'], input[type='email'], input[type='tel'], input:not([type])")
+            for inp in inputs:
+                try:
+                    if not inp.is_visible() or not inp.is_enabled():
+                        continue
+                    val = inp.input_value()
+                    if val and len(val) > 1:
+                        continue
 
-                html_tag = (inp.get_attribute("name") or "") + " " + (inp.get_attribute("placeholder") or "") + " " + (inp.get_attribute("id") or "")
-                html_tag = html_tag.lower()
+                    html_tag = (inp.get_attribute("name") or "") + " " + (inp.get_attribute("placeholder") or "") + " " + (inp.get_attribute("id") or "")
+                    html_tag = html_tag.lower()
 
-                for keywords, value in field_mappings:
-                    if value and any(kw in html_tag for kw in keywords):
-                        logger.info("Autonomous typing into '%s' -> '%s'", html_tag[:25], value)
-                        self.cursor_type(page, inp, value)
-                        break
-            except Exception as exc:
-                logger.debug("Input auto-fill error: %s", exc)
+                    for keywords, value in field_mappings:
+                        if value and any(kw in html_tag for kw in keywords):
+                            logger.info("Autonomous typing into '%s' -> '%s'", html_tag[:25], value)
+                            self.cursor_type(page, inp, value)
+                            break
+                except Exception as exc:
+                    logger.debug("Input auto-fill error: %s", exc)
 
-        # Accept all declaration / terms checkboxes
-        checkboxes = page.query_selector_all("input[type='checkbox']")
-        for cb in checkboxes:
-            try:
-                if cb.is_visible() and not cb.is_checked():
-                    logger.info("Autonomous check on declaration checkbox...")
-                    self.cursor_click(page, cb)
-            except Exception as exc:
-                logger.debug("Checkbox check error: %s", exc)
+            # Accept all declaration / terms checkboxes
+            checkboxes = page.query_selector_all("input[type='checkbox']")
+            for cb in checkboxes:
+                try:
+                    if cb.is_visible() and not cb.is_checked():
+                        logger.info("Autonomous check on declaration checkbox...")
+                        self.cursor_click(page, cb)
+                except Exception as exc:
+                    logger.debug("Checkbox check error: %s", exc)
 
-        # Select individual / student radio if unselected
-        radios = page.query_selector_all("input[type='radio']")
-        for r in radios:
-            try:
-                if r.is_visible() and not r.is_checked():
-                    r_text = (r.get_attribute("value") or "") + " " + (r.get_attribute("id") or "")
-                    if any(w in r_text.lower() for w in ["student", "individual", "solo", "college"]):
-                        self.cursor_click(page, r)
-            except Exception:
-                pass
+            # Select individual / student radio if unselected
+            radios = page.query_selector_all("input[type='radio']")
+            for r in radios:
+                try:
+                    if r.is_visible() and not r.is_checked():
+                        r_text = (r.get_attribute("value") or "") + " " + (r.get_attribute("id") or "")
+                        if any(w in r_text.lower() for w in ["student", "individual", "solo", "college"]):
+                            self.cursor_click(page, r)
+                except Exception:
+                    pass
 
-        # Submit registration form
-        submit_selectors = [
-            "button:has-text('Complete Registration')",
-            "button:has-text('Submit Registration')",
-            "button:has-text('Confirm Registration')",
-            "button:has-text('Register Now')",
-            "button:has-text('Submit')",
-            "button:has-text('Next')",
-        ]
-        for sel in submit_selectors:
-            sub_btn = page.query_selector(sel)
-            if sub_btn and sub_btn.is_visible() and sub_btn.is_enabled():
-                logger.info("Autonomous registration submit: %s", sel)
-                self.cursor_click(page, sub_btn)
-                page.wait_for_timeout(3000)
+            # Check if final submit button is ready
+            submit_selectors = [
+                "button:has-text('Complete Registration')",
+                "button:has-text('Submit Registration')",
+                "button:has-text('Confirm Registration')",
+                "button:has-text('Register Now')",
+                "button:has-text('Confirm')",
+                "button:has-text('Submit')",
+            ]
+            submitted = False
+            for sel in submit_selectors:
+                sub_btn = page.query_selector(sel)
+                if sub_btn and sub_btn.is_visible() and sub_btn.is_enabled():
+                    logger.info("Autonomous registration submit: %s", sel)
+                    self.cursor_click(page, sub_btn)
+                    page.wait_for_timeout(3000)
+                    submitted = True
+                    break
+
+            if submitted:
+                break
+
+            # If no submit, look for Next button in multi-step wizard
+            next_btn = page.query_selector("button:has-text('Next'), button:has-text('Continue'), button:has-text('Proceed')")
+            if next_btn and next_btn.is_visible() and next_btn.is_enabled():
+                logger.info("Advancing multi-step registration wizard...")
+                self.cursor_click(page, next_btn)
+                page.wait_for_timeout(2000)
+            else:
                 break
 
         return True
+
+    def detect_competition_overview(self, page: Page) -> dict[str, Any]:
+        """Extract high-level competition overview, round stages, and registration state."""
+        info = {
+            "title": "",
+            "is_registered": False,
+            "has_active_round": False,
+            "status_message": "",
+            "rounds": [],
+        }
+
+        try:
+            # Title
+            h1 = page.query_selector("h1, .opportunity-title, .comp-title")
+            if h1 and h1.is_visible():
+                info["title"] = h1.inner_text().strip()
+
+            # Registration
+            already_reg = page.query_selector("button:has-text('Registered'), button:has-text('View Registration')")
+            if already_reg and already_reg.is_visible():
+                info["is_registered"] = True
+
+            # Questions or active rounds
+            if self._has_visible_questions(page):
+                info["has_active_round"] = True
+                info["status_message"] = "Live quiz / assessment questions active on screen!"
+            else:
+                for r_sel in self.ROUND_BUTTON_SELECTORS:
+                    btn = page.query_selector(r_sel)
+                    if btn and btn.is_visible():
+                        info["has_active_round"] = True
+                        info["status_message"] = f"Active round entry available ({r_sel})"
+                        break
+
+            if not info["status_message"]:
+                page_status = self.detect_page_status(page)
+                if page_status:
+                    info["status_message"] = page_status
+        except Exception as exc:
+            logger.debug("Overview detection error: %s", exc)
+
+        return info
 
     def select_option(self, page: Page, option_index: int) -> bool:
         """Click and select the chosen option index on the active question using smooth cursor movement."""

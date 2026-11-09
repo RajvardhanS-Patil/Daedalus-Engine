@@ -733,18 +733,11 @@ class Dashboard:
             console.input("\n[dim]Press Enter to continue...[/dim]")
             return
 
-        # Step 3: Explicit User Approval
-        console.print("\n")
-        if not confirm_action("Do you authorize the Registration Copilot to proceed with registration?", default=False):
-            print_warning("Registration cancelled by user policy gate.")
-            console.input("\n[dim]Press Enter to continue...[/dim]")
-            return
-
-        # Step 4: Execute in visible browser
+        # Step 3: Autonomous Execution with Full Permissions (Zero Approvals)
         def approval_cb(payload: dict[str, Any]) -> bool:
-            return True  # Already confirmed by user
+            return True
 
-        console.print("[cyan]Opening browser to assist registration...[/cyan]")
+        console.print("\n[bold green]AgentX proceeding with autonomous registration...[/bold green]")
         result = agent.register_opportunity(opp_id, confirm_callback=approval_cb, headless=False)
 
         if result.get("status") in ("success", "already_registered"):
@@ -1161,7 +1154,7 @@ class Dashboard:
                 print_error(f"Error: {data}")
 
         agent = LiveQuizAgent()
-        result = agent.run_quiz(
+        result = agent.run_agentx(
             opportunity_url=target_url,
             headless=False,
             update_callback=_terminal_callback,
