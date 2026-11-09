@@ -122,11 +122,21 @@ class LiveQuizAgent:
                 result.error_message = "Failed to load quiz assessment page."
                 return result
 
-            # 3. Enter Assessment (handle competition pages, tabs, stages)
+            # 3. Inject glowing visual AI cursor
+            self.driver.inject_visual_cursor(page)
+
+            # 4. Check & Perform Autonomous Registration if needed (Zero Approvals)
+            self._notify(update_callback, "status", "Checking competition registration status...")
+            reg_done = self.driver.auto_register_if_needed(page)
+            if reg_done:
+                self._notify(update_callback, "status", "Registration verified/completed autonomously.")
+
+            # 5. Enter Assessment (handle competition pages, tabs, stages)
             self._notify(update_callback, "status", "Locating assessment round and start CTA...")
             page = self.driver.find_and_enter_assessment(page)
+            self.driver.inject_visual_cursor(page)
 
-            # 4. Proctoring Safety Check
+            # 6. Proctoring Safety Check
             self._notify(update_callback, "status", "Checking for proctoring restrictions...")
             is_proctored, proctor_reason = self.driver.detect_proctoring(page)
             if is_proctored and settings.quiz_automation.abort_on_proctoring:
@@ -139,7 +149,7 @@ class LiveQuizAgent:
                 self._notify(update_callback, "proctor_abort", result.error_message)
                 return result
 
-            # 5. Live Screen Observation Loop (wait for quiz questions to be active)
+            # 7. Live Screen Observation Loop (wait for quiz questions to be active)
             page = self._wait_for_live_questions(
                 page=page,
                 timeout_seconds=30,
@@ -341,6 +351,11 @@ class LiveQuizAgent:
             )
             for candidate_page in reversed(context_pages):
                 try:
+                    self.driver.inject_visual_cursor(candidate_page)
+                    if "/register" in getattr(candidate_page, "url", ""):
+                        self.driver.auto_register_if_needed(candidate_page)
+                    self.driver.click_start_assessment(candidate_page)
+
                     if self.driver._has_visible_questions(candidate_page):
                         logger.info("Live questions detected on tab: %s", getattr(candidate_page, "url", "unknown"))
                         if hasattr(candidate_page, "bring_to_front"):

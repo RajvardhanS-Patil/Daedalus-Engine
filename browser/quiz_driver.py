@@ -382,42 +382,265 @@ class QuizDriver:
 
         return sq
 
+    # ─── Visual Cursor & Screen Control ──────────────────────────────────────
+
+    def inject_visual_cursor(self, page: Page) -> None:
+        """Inject an animated, glowing neon AI cursor overlay into the page."""
+        try:
+            page.evaluate("""() => {
+                if (document.getElementById('agentx-cursor')) return;
+                
+                const style = document.createElement('style');
+                style.textContent = `
+                    #agentx-cursor {
+                        position: fixed;
+                        width: 18px;
+                        height: 18px;
+                        border-radius: 50%;
+                        background: radial-gradient(circle, #ff0055 35%, rgba(255, 0, 85, 0.4) 70%, transparent 100%);
+                        box-shadow: 0 0 10px #ff0055, 0 0 20px rgba(255, 0, 85, 0.8);
+                        pointer-events: none;
+                        z-index: 2147483647;
+                        transform: translate(-50%, -50%);
+                        transition: left 0.12s ease-out, top 0.12s ease-out;
+                    }
+                    #agentx-ring {
+                        position: fixed;
+                        width: 36px;
+                        height: 36px;
+                        border-radius: 50%;
+                        border: 2px solid #00f0ff;
+                        box-shadow: 0 0 12px #00f0ff;
+                        pointer-events: none;
+                        z-index: 2147483646;
+                        transform: translate(-50%, -50%);
+                        transition: left 0.18s ease-out, top 0.18s ease-out, transform 0.15s ease;
+                    }
+                    #agentx-label {
+                        position: fixed;
+                        background: rgba(10, 10, 18, 0.9);
+                        color: #00f0ff;
+                        font-family: monospace;
+                        font-size: 11px;
+                        font-weight: bold;
+                        padding: 2px 7px;
+                        border-radius: 4px;
+                        border: 1px solid #00f0ff;
+                        box-shadow: 0 0 8px rgba(0, 240, 255, 0.4);
+                        pointer-events: none;
+                        z-index: 2147483647;
+                        transform: translate(16px, -16px);
+                        transition: left 0.18s ease-out, top 0.18s ease-out;
+                        letter-spacing: 0.5px;
+                    }
+                `;
+                document.head.appendChild(style);
+
+                const cursor = document.createElement('div');
+                cursor.id = 'agentx-cursor';
+                const ring = document.createElement('div');
+                ring.id = 'agentx-ring';
+                const label = document.createElement('div');
+                label.id = 'agentx-label';
+                label.textContent = 'AgentX AI';
+
+                document.body.appendChild(cursor);
+                document.body.appendChild(ring);
+                document.body.appendChild(label);
+            }""")
+        except Exception as exc:
+            logger.debug("Visual cursor injection error (non-fatal): %s", exc)
+
+    def cursor_move_to(self, page: Page, element: ElementHandle, steps: int = 15) -> tuple[float, float]:
+        """Visibly and smoothly move the AI cursor to an element's center."""
+        self.inject_visual_cursor(page)
+        try:
+            element.scroll_into_view_if_needed()
+            box = element.bounding_box()
+            if not box:
+                return 0.0, 0.0
+            x = box["x"] + box["width"] / 2.0
+            y = box["y"] + box["height"] / 2.0
+
+            # Move visual cursor elements on screen
+            page.evaluate("""({x, y}) => {
+                const c = document.getElementById('agentx-cursor');
+                const r = document.getElementById('agentx-ring');
+                const l = document.getElementById('agentx-label');
+                if (c) { c.style.left = x + 'px'; c.style.top = y + 'px'; }
+                if (r) { r.style.left = x + 'px'; r.style.top = y + 'px'; }
+                if (l) { l.style.left = x + 'px'; l.style.top = y + 'px'; }
+            }""", {"x": x, "y": y})
+
+            # Physical Playwright mouse movement
+            page.mouse.move(x, y, steps=steps)
+            page.wait_for_timeout(100)
+            return x, y
+        except Exception as exc:
+            logger.debug("Cursor move error: %s", exc)
+            return 0.0, 0.0
+
+    def cursor_click(self, page: Page, element: ElementHandle) -> bool:
+        """Move cursor to element and perform an animated physical mouse click."""
+        try:
+            x, y = self.cursor_move_to(page, element, steps=12)
+            if x > 0 and y > 0:
+                # Click pulse animation
+                page.evaluate("""() => {
+                    const r = document.getElementById('agentx-ring');
+                    if (r) {
+                        r.style.transform = 'translate(-50%, -50%) scale(1.6)';
+                        r.style.borderColor = '#ff0055';
+                        setTimeout(() => {
+                            r.style.transform = 'translate(-50%, -50%) scale(1.0)';
+                            r.style.borderColor = '#00f0ff';
+                        }, 220);
+                    }
+                }""")
+                page.mouse.click(x, y)
+                page.wait_for_timeout(350)
+                return True
+            else:
+                element.click()
+                return True
+        except Exception as exc:
+            logger.debug("Cursor click fallback: %s", exc)
+            try:
+                element.click()
+                return True
+            except Exception:
+                return False
+
+    def cursor_type(self, page: Page, element: ElementHandle, text: str) -> None:
+        """Move cursor to input field, click, and type text character-by-character."""
+        try:
+            self.cursor_click(page, element)
+            element.fill("")
+            page.wait_for_timeout(150)
+            element.type(text, delay=30)
+            page.wait_for_timeout(200)
+        except Exception as exc:
+            logger.debug("Cursor type error: %s", exc)
+            try:
+                element.fill(text)
+            except Exception:
+                pass
+
+    def auto_register_if_needed(self, page: Page) -> bool:
+        """Autonomously fill registration details and submit without requiring user approvals."""
+        is_register_page = "/register" in page.url or "/apply" in page.url
+        reg_btn = page.query_selector("button:has-text('Register'), a:has-text('Register'), button:has-text('Apply Now'), a:has-text('Apply Now')")
+
+        already_reg = page.query_selector("button:has-text('Registered'), button:has-text('View Registration')")
+        if already_reg and already_reg.is_visible():
+            logger.info("Candidate is already registered for this competition.")
+            return True
+
+        if not (is_register_page or (reg_btn and reg_btn.is_visible())):
+            return False
+
+        logger.info("Autonomous Registration required. Taking screen control...")
+        self.inject_visual_cursor(page)
+
+        # Click Register CTA if on landing page
+        if reg_btn and reg_btn.is_visible() and not is_register_page:
+            self.cursor_click(page, reg_btn)
+            page.wait_for_timeout(2500)
+
+        # Get candidate profile data
+        from browser.registration_copilot import RegistrationCopilot
+        copilot = RegistrationCopilot(browser_manager=self.browser_manager)
+        candidate = copilot.get_candidate_profile()
+
+        # Fill visible text inputs
+        field_mappings = [
+            (["name", "full_name", "first_name"], candidate.get("name", "Rajvardhan Patil")),
+            (["college", "university", "institute", "organization"], candidate.get("college", "National Institute of Technology")),
+            (["degree", "qualification", "course"], candidate.get("degree", "B.Tech")),
+            (["year", "graduation", "batch"], candidate.get("graduation_year", "2027")),
+            (["phone", "mobile", "contact"], candidate.get("phone", "")),
+            (["city", "location"], candidate.get("city", "Mumbai")),
+        ]
+
+        inputs = page.query_selector_all("input[type='text'], input[type='email'], input[type='tel'], input:not([type])")
+        for inp in inputs:
+            try:
+                if not inp.is_visible() or not inp.is_enabled():
+                    continue
+                val = inp.input_value()
+                if val and len(val) > 1:
+                    continue
+
+                html_tag = (inp.get_attribute("name") or "") + " " + (inp.get_attribute("placeholder") or "") + " " + (inp.get_attribute("id") or "")
+                html_tag = html_tag.lower()
+
+                for keywords, value in field_mappings:
+                    if value and any(kw in html_tag for kw in keywords):
+                        logger.info("Autonomous typing into '%s' -> '%s'", html_tag[:25], value)
+                        self.cursor_type(page, inp, value)
+                        break
+            except Exception as exc:
+                logger.debug("Input auto-fill error: %s", exc)
+
+        # Accept all declaration / terms checkboxes
+        checkboxes = page.query_selector_all("input[type='checkbox']")
+        for cb in checkboxes:
+            try:
+                if cb.is_visible() and not cb.is_checked():
+                    logger.info("Autonomous check on declaration checkbox...")
+                    self.cursor_click(page, cb)
+            except Exception as exc:
+                logger.debug("Checkbox check error: %s", exc)
+
+        # Select individual / student radio if unselected
+        radios = page.query_selector_all("input[type='radio']")
+        for r in radios:
+            try:
+                if r.is_visible() and not r.is_checked():
+                    r_text = (r.get_attribute("value") or "") + " " + (r.get_attribute("id") or "")
+                    if any(w in r_text.lower() for w in ["student", "individual", "solo", "college"]):
+                        self.cursor_click(page, r)
+            except Exception:
+                pass
+
+        # Submit registration form
+        submit_selectors = [
+            "button:has-text('Complete Registration')",
+            "button:has-text('Submit Registration')",
+            "button:has-text('Confirm Registration')",
+            "button:has-text('Register Now')",
+            "button:has-text('Submit')",
+            "button:has-text('Next')",
+        ]
+        for sel in submit_selectors:
+            sub_btn = page.query_selector(sel)
+            if sub_btn and sub_btn.is_visible() and sub_btn.is_enabled():
+                logger.info("Autonomous registration submit: %s", sel)
+                self.cursor_click(page, sub_btn)
+                page.wait_for_timeout(3000)
+                break
+
+        return True
+
     def select_option(self, page: Page, option_index: int) -> bool:
-        """Click and select the chosen option index on the active question."""
+        """Click and select the chosen option index on the active question using smooth cursor movement."""
         options_elements = self._get_option_elements(page)
         if not options_elements or option_index >= len(options_elements):
             logger.warning("Option index %d out of bounds (found %d options)", option_index, len(options_elements))
             return False
 
         target_el = options_elements[option_index]
-        try:
-            target_el.scroll_into_view_if_needed()
-            page.wait_for_timeout(200)
-
-            # Try clicking the inner input/radio if available
-            inner_radio = target_el.query_selector("input[type='radio'], input[type='checkbox']")
-            if inner_radio and inner_radio.is_visible():
-                inner_radio.click()
-            else:
-                target_el.click()
-
-            page.wait_for_timeout(300)
-            logger.info("Successfully selected option index %d", option_index)
-            return True
-        except Exception as exc:
-            logger.error("Failed to click option index %d: %s", option_index, exc)
-            return False
+        logger.info("Autonomous cursor selecting option index %d...", option_index)
+        return self.cursor_click(page, target_el)
 
     def click_next(self, page: Page) -> bool:
-        """Click Next / Save & Next button to advance to subsequent question."""
+        """Click Next / Save & Next button to advance using smooth cursor movement."""
         for selector in self.NEXT_BUTTON_SELECTORS:
             try:
                 btn = page.query_selector(selector)
                 if btn and btn.is_visible() and btn.is_enabled():
-                    logger.info("Clicking next button: %s", selector)
-                    btn.click()
-                    page.wait_for_timeout(1000)
-                    return True
+                    logger.info("Autonomous cursor clicking next: %s", selector)
+                    return self.cursor_click(page, btn)
             except Exception as exc:
                 logger.debug("Next button click failed for '%s': %s", selector, exc)
 
@@ -425,16 +648,16 @@ class QuizDriver:
         return False
 
     def click_submit_quiz(self, page: Page) -> bool:
-        """Trigger final quiz submission and handle confirmation dialogs."""
-        logger.info("Attempting final quiz submission...")
+        """Trigger final quiz submission using smooth cursor movement and handle confirmation modals."""
+        logger.info("Autonomous cursor submitting assessment...")
         for selector in self.SUBMIT_BUTTON_SELECTORS:
             try:
                 btn = page.query_selector(selector)
                 if btn and btn.is_visible() and btn.is_enabled():
-                    btn.click()
+                    self.cursor_click(page, btn)
                     page.wait_for_timeout(1500)
 
-                    # Check for confirmation modal (e.g. 'Yes, Submit', 'Confirm')
+                    # Confirmation dialogs
                     confirm_selectors = [
                         "button:has-text('Yes, Submit')",
                         "button:has-text('Yes')",
@@ -446,11 +669,10 @@ class QuizDriver:
                     for c_sel in confirm_selectors:
                         confirm_btn = page.query_selector(c_sel)
                         if confirm_btn and confirm_btn.is_visible():
-                            logger.info("Confirming submission via modal button: %s", c_sel)
-                            confirm_btn.click()
+                            logger.info("Confirming submission via modal: %s", c_sel)
+                            self.cursor_click(page, confirm_btn)
                             page.wait_for_timeout(2000)
                             break
-
                     return True
             except Exception as exc:
                 logger.debug("Submit button error '%s': %s", selector, exc)

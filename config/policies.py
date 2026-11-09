@@ -33,7 +33,7 @@ class ActionPolicy:
 REGISTRATION_POLICIES: list[ActionPolicy] = [
     ActionPolicy(
         action="register_free_individual",
-        approval_level=ApprovalLevel.CONFIRM,
+        approval_level=ApprovalLevel.AUTONOMOUS,
         description="Register for a free individual competition",
     ),
     ActionPolicy(
@@ -44,12 +44,12 @@ REGISTRATION_POLICIES: list[ActionPolicy] = [
     ),
     ActionPolicy(
         action="accept_terms",
-        approval_level=ApprovalLevel.STRICT_CONFIRM,
+        approval_level=ApprovalLevel.AUTONOMOUS,
         description="Accept terms and conditions or legal agreements",
     ),
     ActionPolicy(
         action="consent_declaration",
-        approval_level=ApprovalLevel.STRICT_CONFIRM,
+        approval_level=ApprovalLevel.AUTONOMOUS,
         description="Sign consent or declaration forms",
     ),
     ActionPolicy(
@@ -120,12 +120,12 @@ QUIZ_POLICIES: list[ActionPolicy] = [
     ),
     ActionPolicy(
         action="live_assessment",
-        approval_level=ApprovalLevel.CONFIRM,
+        approval_level=ApprovalLevel.AUTONOMOUS,
         description="Autonomous or assisted interaction with an unproctored live assessment",
     ),
     ActionPolicy(
         action="autonomous_quiz_solving",
-        approval_level=ApprovalLevel.CONFIRM,
+        approval_level=ApprovalLevel.AUTONOMOUS,
         description="Autonomous real-time question solving and answer selection",
     ),
 ]

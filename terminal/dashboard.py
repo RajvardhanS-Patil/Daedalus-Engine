@@ -1121,22 +1121,15 @@ class Dashboard:
 
         console.clear()
         console.print(Panel(
-            f"[bold white]TARGET ASSESSMENT:[/bold white] [cyan]{target_url}[/cyan]\n\n"
-            "[bold red]SAFETY & POLICY GATES:[/bold red]\n"
-            "• A visible Chromium browser window will launch on your screen.\n"
-            "• AgentX will autonomously navigate, read questions, evaluate answers via Qwen 2.5 7B, and click choices.\n"
-            "• [bold yellow]Proctoring Guard:[/bold yellow] If webcam or proctoring software is detected, AgentX will immediately abort.\n"
-            "• You can take manual control or close the window at any moment.\n",
-            title="[bold magenta]PRE-FLIGHT AUTHORIZATION[/bold magenta]",
+            f"[bold white]AUTONOMOUS AUTOPILOT LAUNCHED:[/bold white] [cyan]{target_url}[/cyan]\n\n"
+            "[bold green]FULL AUTONOMOUS SCREEN CONTROL ACTIVE:[/bold green]\n"
+            "• Physical mouse cursor control, auto-registration, exam entry, and test-solving.\n"
+            "• AI evaluates questions via local Qwen 2.5 7B and automatically clicks answers.\n",
+            title="[bold magenta]AGENTX SCREEN CONTROL[/bold magenta]",
             border_style="magenta",
         ))
 
-        if not confirm_action("Authorize AgentX to begin autonomous screen control?", default=False):
-            print_info("Operation cancelled by user.")
-            time.sleep(1.0)
-            return
-
-        console.print("\n[bold green]Launching AgentX Live Quiz Autopilot...[/bold green]\n")
+        console.print("\n[bold green]Launching AgentX Live Autopilot...[/bold green]\n")
 
         def _terminal_callback(event: dict[str, Any]) -> None:
             ev_type = event.get("event")
