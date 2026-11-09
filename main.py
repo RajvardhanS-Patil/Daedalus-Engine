@@ -87,8 +87,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--agentx",
         type=str,
+        nargs="?",
+        const="https://unstop.com",
+        default=None,
         metavar="URL",
-        help="Launch AgentX Complete Autonomous Screen Control Agent on any Unstop URL (auto-register, round entry, live quiz solving, persistent desktop session)",
+        help="Launch AgentX Autonomous Screen Control Agent on Unstop (optionally specify competition URL)",
     )
     parser.add_argument(
         "--quiz",
@@ -129,16 +132,18 @@ def main() -> int:
         bm.launch(headless=False)
         page = bm.new_page()
         try:
-            page.goto("https://unstop.com/login", wait_until="domcontentloaded")
             print("\n" + "=" * 65)
             print("Chromium window opened! Log in to your Unstop account.")
             print("Credentials are never touched by code; cookies save to data/browser_profile/.")
             print("=" * 65 + "\n")
-            input("Press [Enter] here once you have finished logging into Unstop... ")
-            if bm.check_login_status(page):
-                print("\n[SUCCESS] Authentication detected! Your Unstop account is now active.")
+            if bm.wait_for_login(page, timeout_seconds=180):
+                print("\n[SUCCESS] Authentication confirmed! Your Unstop account is now active.")
             else:
-                print("\n[INFO] Session saved to data/browser_profile/. If login was completed, the session is active.")
+                input("Press [Enter] here once you have finished logging into Unstop... ")
+                if bm.check_login_status(page):
+                    print("\n[SUCCESS] Authentication confirmed! Your Unstop account is now active.")
+                else:
+                    print("\n[INFO] Session saved to data/browser_profile/.")
         except Exception as exc:
             print(f"\n[ERROR] Login session encountered an error: {exc}")
         finally:

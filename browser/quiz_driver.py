@@ -132,6 +132,29 @@ class QuizDriver:
         "button:has-text('Play')",
     ]
 
+    REGISTRATION_BUTTON_SELECTORS = [
+        "div.register_btn",
+        "[class*='register_btn']",
+        "div.on_unstop",
+        "button:has-text('Register Now')",
+        "button:has-text('Register')",
+        "a:has-text('Register Now')",
+        "a:has-text('Register')",
+        "button:has-text('Apply Now')",
+        "a:has-text('Apply Now')",
+        "button:has-text('Participate')",
+        "a:has-text('Participate')",
+        "button[aria-label*='Register' i]",
+    ]
+
+    ALREADY_REGISTERED_SELECTORS = [
+        "button:has-text('Registered')",
+        "div.registered_btn",
+        "span:has-text('Registered')",
+        "button:has-text('View Registration')",
+        "a:has-text('View Registration')",
+    ]
+
     ROUND_BUTTON_SELECTORS = [
         "a[href*='/assessment/']",
         "a[href*='/quiz/']",
@@ -529,22 +552,37 @@ class QuizDriver:
     def auto_register_if_needed(self, page: Page) -> bool:
         """Autonomously fill registration details and submit without requiring user approvals."""
         is_register_page = "/register" in page.url or "/apply" in page.url
-        reg_btn = page.query_selector(
-            "button:has-text('Register'), a:has-text('Register'), "
-            "button:has-text('Apply Now'), a:has-text('Apply Now'), "
-            "button:has-text('Participate'), a:has-text('Participate')"
-        )
 
-        already_reg = page.query_selector("button:has-text('Registered'), button:has-text('View Registration')")
-        if already_reg and already_reg.is_visible():
-            logger.info("Candidate is already registered for this competition.")
-            return True
+        # Check if already registered
+        for chk_sel in self.ALREADY_REGISTERED_SELECTORS:
+            try:
+                el = page.query_selector(chk_sel)
+                if el and el.is_visible():
+                    txt = el.inner_text().strip()
+                    if txt and len(txt) < 30:
+                        logger.info("Candidate is already registered for this competition (%s: %s).", chk_sel, txt)
+                        return True
+            except Exception:
+                pass
+
+        # Locate specific leaf registration button
+        reg_btn = None
+        for sel in self.REGISTRATION_BUTTON_SELECTORS:
+            try:
+                candidate_el = page.query_selector(sel)
+                if candidate_el and candidate_el.is_visible():
+                    txt = candidate_el.inner_text().strip()
+                    if txt and len(txt) < 35 and any(w in txt.lower() for w in ["register", "apply", "participate"]):
+                        reg_btn = candidate_el
+                        logger.info("Found specific registration button: %s (%s)", sel, txt)
+                        break
+            except Exception:
+                pass
 
         if not (is_register_page or (reg_btn and reg_btn.is_visible())):
             return False
 
         logger.info("Autonomous Registration required. Taking screen control...")
-        self.inject_visual_cursor(page)
 
         # Click Register CTA if on landing page
         if reg_btn and reg_btn.is_visible() and not is_register_page:

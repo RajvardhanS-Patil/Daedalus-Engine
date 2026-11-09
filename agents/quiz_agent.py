@@ -129,14 +129,28 @@ class LiveQuizAgent:
             # 1. Verify Authentication
             self._notify(update_callback, "status", "Verifying Unstop login session...")
             if not self.browser_manager.check_login_status(page):
-                logger.warning("User is not logged into Unstop.")
-                result.status = "login_required"
-                result.error_message = (
-                    "No active Unstop login session found. "
-                    "Run 'agentx --login' to authenticate your account first."
-                )
-                self._notify(update_callback, "error", result.error_message)
-                return result
+                if not headless:
+                    self._notify(update_callback, "status", "Unstop login required. Opening login window on screen...")
+                    print("\n[!] Please log into your Unstop account in the browser window.")
+                    print("[*] AgentX is actively waiting and will automatically detect your login...")
+                    if self.browser_manager.wait_for_login(page, timeout_seconds=180) is not True:
+                        result.status = "login_required"
+                        result.error_message = (
+                            "No active Unstop login session found. "
+                            "Please run 'python main.py --login' to authenticate."
+                        )
+                        self._notify(update_callback, "error", result.error_message)
+                        return result
+                    self._notify(update_callback, "status", "Authentication confirmed! Resuming autonomous control...")
+                else:
+                    logger.warning("User is not logged into Unstop.")
+                    result.status = "login_required"
+                    result.error_message = (
+                        "No active Unstop login session found. "
+                        "Run 'python main.py --login' to authenticate your account first."
+                    )
+                    self._notify(update_callback, "error", result.error_message)
+                    return result
 
             # 2. Navigate to Assessment or Competition
             self._notify(update_callback, "status", f"Navigating to {opportunity_url}...")
@@ -374,71 +388,109 @@ class LiveQuizAgent:
         self,
         page: Any,
         update_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+        max_duration: int = 3600,
     ) -> None:
-        """Hold browser open on screen with continuous live monitoring & user control prompt."""
+        """Fully autonomous background perception-action loop that monitors and controls the desktop."""
         self._notify(
             update_callback,
             "status",
-            "AgentX is keeping the browser open on your desktop. Full autonomous screen control active.",
+            "AgentX autonomous desktop loop active. Watching screen, auto-registering, and solving assessments...",
         )
         print("\n" + "=" * 70)
-        print("  AGENTX PERSISTENT SCREEN CONTROL ACTIVE")
-        print("  • Browser is open on your desktop with glowing AI visual cursor.")
-        print("  • If you navigate or open an assessment, AgentX will solve it autonomously.")
-        print("  • Commands:")
-        print("      [Enter]      : Re-scan active screen & check for live questions/rounds")
-        print("      u <url>      : Navigate browser to a new Unstop competition/quiz URL")
-        print("      r            : Re-run auto-registration on the current page")
-        print("      q            : Close browser and exit AgentX")
+        print("  AGENTX ACTIVE AUTONOMOUS SCREEN CONTROL")
+        print("  • Physical desktop mouse cursor control active.")
+        print("  • Agent is continuously monitoring the screen (2 Hz).")
+        print("  • Auto-registers, enters live rounds, and solves questions automatically.")
+        print("  • Press Ctrl+C in this terminal or close the browser window to stop.")
         print("=" * 70 + "\n")
 
-        while True:
+        start_time = time.time()
+        last_action_time = 0.0
+        session_id = None
+
+        while time.time() - start_time < max_duration:
             try:
-                cmd = input("AgentX Screen Control [Enter to scan / q to exit] > ").strip()
-                if cmd.lower() in ("q", "quit", "exit"):
-                    print("[*] Exiting AgentX. Closing browser...")
-                    self.browser_manager.close()
+                if not self.browser_manager.is_running():
                     break
 
-                if cmd.lower().startswith("u "):
-                    new_url = cmd[2:].strip()
-                    if new_url.startswith("http"):
-                        print(f"[*] Navigating AgentX to: {new_url}...")
-                        active_p = self._get_active_quiz_page(page)
-                        active_p.goto(new_url, wait_until="domcontentloaded")
-                        self.driver.inject_visual_cursor(active_p)
-                        self.driver.auto_register_if_needed(active_p)
-                        active_p = self.driver.find_and_enter_assessment(active_p)
-                        page = active_p
-                    else:
-                        print("[!] Please provide a valid URL starting with http:// or https://")
-                    continue
-
-                if cmd.lower() == "r":
-                    active_p = self._get_active_quiz_page(page)
-                    print("[*] Re-checking autonomous registration on active page...")
-                    done = self.driver.auto_register_if_needed(active_p)
-                    print(f"[*] Registration status: {'Completed/Already Registered' if done else 'No registration form found'}")
-                    continue
-
-                # Default Enter: scan current page
                 active_p = self._get_active_quiz_page(page)
-                self.driver.inject_visual_cursor(active_p)
+
+                # Check if page is closed
+                if active_p.is_closed():
+                    if self.browser_manager._context and self.browser_manager._context.pages:
+                        active_p = self.browser_manager._context.pages[0]
+                    else:
+                        break
+
+                now = time.time()
+
+                # 1. Check for live quiz questions
                 if self.driver._has_visible_questions(active_p):
-                    print("[*] Active quiz questions detected on screen! Starting autonomous test solver...")
-                    sess_id = self._create_db_session(active_p.url)
-                    self._solve_assessment_loop(active_p, session_id=sess_id, max_questions=100, update_callback=update_callback)
-                else:
-                    overview = self.driver.detect_competition_overview(active_p)
-                    print(f"[*] Current Page: {overview.get('title') or active_p.title()}")
-                    print(f"[*] Registered: {overview.get('is_registered')}")
-                    print(f"[*] Status: {overview.get('status_message') or 'Monitoring page for changes'}")
-            except (KeyboardInterrupt, EOFError):
-                print("\n[*] Received exit signal. Closing browser...")
+                    self._notify(update_callback, "status", "Active quiz questions detected on screen! Solving autonomously...")
+                    if session_id is None:
+                        session_id = self._create_db_session(active_p.url)
+                    self._solve_assessment_loop(
+                        page=active_p,
+                        session_id=session_id,
+                        max_questions=100,
+                        update_callback=update_callback,
+                    )
+                    last_action_time = now
+                    time.sleep(1.0)
+                    continue
+
+                # 2. Check for assessment completion
+                if self.driver.is_quiz_completed(active_p):
+                    self._notify(update_callback, "status", "Assessment submitted successfully! Monitoring for further rounds...")
+                    time.sleep(2.0)
+                    continue
+
+                # 3. Throttle routine discovery actions to once every 2.5s
+                if now - last_action_time > 2.5:
+                    # Check for start assessment / instruction buttons
+                    if self.driver.click_start_assessment(active_p):
+                        self._notify(update_callback, "status", "Clicked Start / Proceed on assessment instructions.")
+                        last_action_time = now
+                        time.sleep(1.5)
+                        continue
+
+                    # Check for direct round entry buttons
+                    entered_round = False
+                    for r_sel in self.driver.ROUND_BUTTON_SELECTORS:
+                        try:
+                            btn = active_p.query_selector(r_sel)
+                            if btn and btn.is_visible():
+                                txt = btn.inner_text().strip()
+                                if txt and len(txt) < 40 and not any(w in txt.lower() for w in ["share", "refer", "report"]):
+                                    self._notify(update_callback, "status", f"Entering round: '{txt}'")
+                                    self.driver.cursor_click(active_p, btn)
+                                    entered_round = True
+                                    last_action_time = now
+                                    time.sleep(2.0)
+                                    break
+                        except Exception:
+                            pass
+                    if entered_round:
+                        continue
+
+                    # Check for auto-registration
+                    if self.driver.auto_register_if_needed(active_p):
+                        self._notify(update_callback, "status", "Auto-registration executed.")
+                        last_action_time = now
+                        time.sleep(2.0)
+                        continue
+
+                    last_action_time = now
+
+                time.sleep(0.5)
+
+            except (KeyboardInterrupt, SystemExit):
+                print("\n[*] Termination requested. Closing AgentX...")
                 self.browser_manager.close()
                 break
             except Exception as exc:
-                logger.error("Error in screen control loop: %s", exc)
+                logger.debug("Autonomous loop step: %s", exc)
+                time.sleep(1.0)
 
     # ─── Internal Helpers ─────────────────────────────────────────────────────
 

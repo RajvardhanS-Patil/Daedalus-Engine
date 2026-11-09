@@ -187,7 +187,7 @@ class BrowserManager:
         return self._context is not None
 
     def check_login_status(self, page: Page | None = None) -> bool:
-        """Probe whether the current session is authenticated on Unstop."""
+        """Probe whether the current session is authentically logged into Unstop."""
         import time as _time
 
         close_page = False
@@ -198,28 +198,18 @@ class BrowserManager:
             close_page = True
 
         try:
-            # 1. Primary check: inspect persistent authentication cookies
-            if self._context is not None:
-                try:
-                    cookies = self._context.cookies(["https://unstop.com", "https://api.unstop.com"])
-                    auth_cookie_names = {"access_token", "token", "jwt", "session_id", "user_id"}
-                    for cookie in cookies:
-                        c_name = cookie.get("name", "").lower()
-                        c_val = cookie.get("value", "")
-                        if (c_name in auth_cookie_names or "token" in c_name) and len(c_val) > 10:
-                            expires = cookie.get("expires", -1)
-                            if expires == -1 or expires > _time.time():
-                                logger.info("Valid authentication token '%s' detected in session cookies.", cookie.get("name"))
-                                return True
-                except Exception as c_exc:
-                    logger.debug("Cookie inspection error: %s", c_exc)
-
-            # 2. Secondary check: DOM logged-in indicators
             current_url = page.url
             if "unstop.com" not in current_url:
                 page.goto("https://unstop.com", wait_until="domcontentloaded")
                 page.wait_for_timeout(1500)
 
+            # 1. Negative check: if a primary login button is actively rendered, user is unauthenticated
+            login_btn = page.query_selector(".login_btn, [class*='login_btn'], a.login, button:has-text('Login')")
+            if login_btn and login_btn.is_visible():
+                logger.info("Login CTA is visible on page — user is not authenticated.")
+                return False
+
+            # 2. Positive check: inspect logged-in DOM indicators
             logged_in_selectors = [
                 "un-user-avatar",
                 ".user-profile",
@@ -229,11 +219,28 @@ class BrowserManager:
                 "img[alt*='profile' i]",
                 "a[href*='/dashboard']",
                 "[class*='avatar']",
+                ".user-info",
             ]
             for sel in logged_in_selectors:
                 el = page.query_selector(sel)
                 if el is not None and el.is_visible():
+                    logger.info("DOM authentication confirmed via selector: %s", sel)
                     return True
+
+            # 3. Cookie fallback check (only valid if no login button is displayed)
+            if self._context is not None:
+                try:
+                    cookies = self._context.cookies(["https://unstop.com", "https://api.unstop.com"])
+                    auth_cookie_names = {"access_token", "token", "jwt", "session_id", "user_id"}
+                    for cookie in cookies:
+                        c_name = cookie.get("name", "").lower()
+                        c_val = cookie.get("value", "")
+                        if (c_name in auth_cookie_names or "token" in c_name) and len(c_val) > 20:
+                            expires = cookie.get("expires", -1)
+                            if expires == -1 or expires > _time.time():
+                                return True
+                except Exception as c_exc:
+                    logger.debug("Cookie inspection error: %s", c_exc)
 
             return False
         except Exception as exc:
@@ -245,6 +252,23 @@ class BrowserManager:
                     page.close()
                 except Exception:
                     pass
+
+    def wait_for_login(self, page: Page, timeout_seconds: int = 180, callback: object = None) -> bool:
+        """Keep browser open and monitor until user logs into Unstop."""
+        import time as _time
+
+        logger.info("Initiating interactive login detection (timeout: %ds)...", timeout_seconds)
+        if "unstop.com/auth/login" not in page.url and "unstop.com/login" not in page.url:
+            page.goto("https://unstop.com/auth/login", wait_until="domcontentloaded")
+
+        start = _time.time()
+        while _time.time() - start < timeout_seconds:
+            if self.check_login_status(page):
+                logger.info("Authentication detected successfully!")
+                return True
+            page.wait_for_timeout(1000)
+
+        return False
 
     # ------------------------------------------------------------------
     # Context-manager protocol

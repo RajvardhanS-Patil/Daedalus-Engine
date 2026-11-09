@@ -59,6 +59,7 @@ def test_live_quiz_agent_login_required():
     """Test that agent halts gracefully if user is not logged in."""
     mock_bm = MagicMock()
     mock_bm.check_login_status.return_value = False
+    mock_bm.wait_for_login.return_value = False
     mock_bm.new_page.return_value = MagicMock()
 
     agent = LiveQuizAgent(browser_manager=mock_bm)
