@@ -11,13 +11,21 @@ Responsible for:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import subprocess
 import time
 from dataclasses import dataclass, field
 from typing import Optional
 
 from playwright.sync_api import ElementHandle, Page, TimeoutError as PwTimeoutError
+
+try:
+    import pyautogui
+    pyautogui.FAILSAFE = False
+except Exception:
+    pyautogui = None
 
 from browser.browser_manager import BrowserManager
 from config import settings
@@ -389,78 +397,59 @@ class QuizDriver:
 
         return sq
 
-    # ─── Visual Cursor & Screen Control ──────────────────────────────────────
+    # ─── Physical OS Cursor & Screen Control ──────────────────────────────────
 
     def inject_visual_cursor(self, page: Page) -> None:
-        """Inject an animated, glowing neon AI cursor overlay into the page."""
+        """No-op: Artificial CSS cursor overlay replaced by real physical OS cursor control."""
+        pass
+
+    def _get_element_screen_coords(self, page: Page, box: dict) -> tuple[int, int]:
+        """Convert page viewport bounding box to desktop screen coordinates."""
+        win_x, win_y = 0, 0
+        top_bar = 80
+
+        # Try Hyprland active client / clients inspection
         try:
-            page.evaluate("""() => {
-                if (document.getElementById('agentx-cursor')) return;
-                
-                const style = document.createElement('style');
-                style.textContent = `
-                    #agentx-cursor {
-                        position: fixed;
-                        width: 18px;
-                        height: 18px;
-                        border-radius: 50%;
-                        background: radial-gradient(circle, #ff0055 35%, rgba(255, 0, 85, 0.4) 70%, transparent 100%);
-                        box-shadow: 0 0 10px #ff0055, 0 0 20px rgba(255, 0, 85, 0.8);
-                        pointer-events: none;
-                        z-index: 2147483647;
-                        transform: translate(-50%, -50%);
-                        transition: left 0.12s ease-out, top 0.12s ease-out;
-                    }
-                    #agentx-ring {
-                        position: fixed;
-                        width: 36px;
-                        height: 36px;
-                        border-radius: 50%;
-                        border: 2px solid #00f0ff;
-                        box-shadow: 0 0 12px #00f0ff;
-                        pointer-events: none;
-                        z-index: 2147483646;
-                        transform: translate(-50%, -50%);
-                        transition: left 0.18s ease-out, top 0.18s ease-out, transform 0.15s ease;
-                    }
-                    #agentx-label {
-                        position: fixed;
-                        background: rgba(10, 10, 18, 0.9);
-                        color: #00f0ff;
-                        font-family: monospace;
-                        font-size: 11px;
-                        font-weight: bold;
-                        padding: 2px 7px;
-                        border-radius: 4px;
-                        border: 1px solid #00f0ff;
-                        box-shadow: 0 0 8px rgba(0, 240, 255, 0.4);
-                        pointer-events: none;
-                        z-index: 2147483647;
-                        transform: translate(16px, -16px);
-                        transition: left 0.18s ease-out, top 0.18s ease-out;
-                        letter-spacing: 0.5px;
-                    }
-                `;
-                document.head.appendChild(style);
+            res = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True, timeout=0.8)
+            clients = json.loads(res.stdout)
+            for c in clients:
+                c_class = (c.get("class") or "").lower()
+                c_title = (c.get("title") or "").lower()
+                if "chrome" in c_class or "chromium" in c_class or "unstop" in c_title:
+                    at = c.get("at", [0, 0])
+                    win_x, win_y = int(at[0]), int(at[1])
+                    break
+        except Exception:
+            pass
 
-                const cursor = document.createElement('div');
-                cursor.id = 'agentx-cursor';
-                const ring = document.createElement('div');
-                ring.id = 'agentx-ring';
-                const label = document.createElement('div');
-                label.id = 'agentx-label';
-                label.textContent = 'AgentX AI';
+        # Page window geometry fallback
+        try:
+            geom = page.evaluate(
+                "() => ({ x: window.screenX || 0, y: window.screenY || 0, chromeH: (window.outerHeight - window.innerHeight) || 80 })"
+            )
+            if win_x == 0 and win_y == 0:
+                win_x = int(geom.get("x", 0))
+                win_y = int(geom.get("y", 0))
+            if geom.get("chromeH", 0) > 40:
+                top_bar = int(geom.get("chromeH", 80))
+        except Exception:
+            pass
 
-                document.body.appendChild(cursor);
-                document.body.appendChild(ring);
-                document.body.appendChild(label);
-            }""")
-        except Exception as exc:
-            logger.debug("Visual cursor injection error (non-fatal): %s", exc)
+        screen_x = int(win_x + box["x"] + box["width"] / 2.0)
+        screen_y = int(win_y + top_bar + box["y"] + box["height"] / 2.0)
 
-    def cursor_move_to(self, page: Page, element: ElementHandle, steps: int = 20) -> tuple[float, float]:
-        """Visibly and smoothly move the AI cursor to an element's center."""
-        self.inject_visual_cursor(page)
+        if pyautogui is not None:
+            try:
+                sw, sh = pyautogui.size()
+                screen_x = max(0, min(screen_x, sw - 1))
+                screen_y = max(0, min(screen_y, sh - 1))
+            except Exception:
+                pass
+
+        return screen_x, screen_y
+
+    def cursor_move_to(self, page: Page, element: ElementHandle, steps: int = 15) -> tuple[float, float]:
+        """Visibly move the actual physical OS desktop cursor to element center."""
         try:
             element.scroll_into_view_if_needed()
             box = element.bounding_box()
@@ -469,43 +458,36 @@ class QuizDriver:
             x = box["x"] + box["width"] / 2.0
             y = box["y"] + box["height"] / 2.0
 
-            # Physical Playwright mouse movement with intermediate step events
+            # Move Playwright internal pointer
             page.mouse.move(x, y, steps=steps)
-            page.wait_for_timeout(80)
 
-            # Snap visual cursor elements to exact target center
-            page.evaluate("""({x, y}) => {
-                const c = document.getElementById('agentx-cursor');
-                const r = document.getElementById('agentx-ring');
-                const l = document.getElementById('agentx-label');
-                if (c) { c.style.left = x + 'px'; c.style.top = y + 'px'; }
-                if (r) { r.style.left = x + 'px'; r.style.top = y + 'px'; }
-                if (l) { l.style.left = x + 'px'; l.style.top = y + 'px'; }
-            }""", {"x": x, "y": y})
+            # Move real physical desktop cursor
+            if pyautogui is not None:
+                try:
+                    screen_x, screen_y = self._get_element_screen_coords(page, box)
+                    if screen_x > 0 and screen_y > 0:
+                        pyautogui.moveTo(screen_x, screen_y, duration=0.20)
+                except Exception as p_err:
+                    logger.debug("PyAutoGUI move error: %s", p_err)
+
+            page.wait_for_timeout(60)
             return x, y
         except Exception as exc:
             logger.debug("Cursor move error: %s", exc)
             return 0.0, 0.0
 
     def cursor_click(self, page: Page, element: ElementHandle) -> bool:
-        """Move cursor to element and perform an animated physical mouse click."""
+        """Move physical cursor to element and perform physical and browser clicks."""
         try:
-            x, y = self.cursor_move_to(page, element, steps=18)
+            x, y = self.cursor_move_to(page, element, steps=15)
+            if pyautogui is not None:
+                try:
+                    pyautogui.click()
+                except Exception:
+                    pass
             if x > 0 and y > 0:
-                # Click pulse animation on visual ring
-                page.evaluate("""() => {
-                    const r = document.getElementById('agentx-ring');
-                    if (r) {
-                        r.style.transform = 'translate(-50%, -50%) scale(1.6)';
-                        r.style.borderColor = '#ff0055';
-                        setTimeout(() => {
-                            r.style.transform = 'translate(-50%, -50%) scale(1.0)';
-                            r.style.borderColor = '#00f0ff';
-                        }, 220);
-                    }
-                }""")
                 page.mouse.click(x, y)
-                page.wait_for_timeout(350)
+                page.wait_for_timeout(300)
                 return True
             else:
                 element.click()
@@ -519,22 +501,22 @@ class QuizDriver:
                 return False
 
     def cursor_type(self, page: Page, element: ElementHandle, text: str) -> None:
-        """Move cursor to input field, click, and type text character-by-character."""
+        """Move physical cursor to input field, click, and type text."""
         try:
             self.cursor_click(page, element)
             element.fill("")
-            page.wait_for_timeout(150)
+            page.wait_for_timeout(100)
             element.type(text, delay=35)
             page.wait_for_timeout(200)
 
-            # Check if an autocomplete dropdown appeared and select first matching item
+            # Select autocomplete if any
             try:
                 opt = page.query_selector(
                     ".mat-autocomplete-panel mat-option, .ng-dropdown-panel .ng-option, ul.typeahead li, div[role='option'], .dropdown-item"
                 )
                 if opt and opt.is_visible():
                     self.cursor_click(page, opt)
-                    page.wait_for_timeout(300)
+                    page.wait_for_timeout(250)
             except Exception:
                 pass
         except Exception as exc:

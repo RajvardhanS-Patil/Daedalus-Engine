@@ -16,6 +16,8 @@ from playwright.sync_api import (
     sync_playwright,
 )
 
+import shutil
+
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -61,6 +63,15 @@ class BrowserManager:
         user_data_dir: Path = Path(settings.browser.user_data_dir)
         user_data_dir.mkdir(parents=True, exist_ok=True)
 
+        # Clear stale Chromium session files so old tabs (e.g. prior sites) are never restored
+        for session_sub in ("Sessions", "Sessions_Encrypted"):
+            s_path = user_data_dir / "Default" / session_sub
+            if s_path.exists():
+                try:
+                    shutil.rmtree(s_path, ignore_errors=True)
+                except Exception:
+                    pass
+
         logger.info(
             "Launching Chromium (headless=%s, slow_mo=%d, user_data_dir=%s)",
             resolved_headless,
@@ -82,6 +93,8 @@ class BrowserManager:
                     "--disable-blink-features=AutomationControlled",
                     "--no-first-run",
                     "--no-default-browser-check",
+                    "--disable-session-crashed-bubble",
+                    "--restore-last-session=false",
                 ],
             }
 
@@ -99,103 +112,6 @@ class BrowserManager:
             context.set_default_timeout(settings.browser.timeout)
             context.set_default_navigation_timeout(settings.browser.timeout)
 
-            # Inject glowing AI visual cursor across all pages in headed mode
-            if not resolved_headless:
-                cursor_script = """
-                (() => {
-                    function setupCursor() {
-                        if (document.getElementById('agentx-cursor')) return;
-                        const style = document.createElement('style');
-                        style.textContent = `
-                            #agentx-cursor {
-                                position: fixed;
-                                width: 20px;
-                                height: 20px;
-                                border-radius: 50%;
-                                background: radial-gradient(circle, #ff0055 40%, rgba(255, 0, 85, 0.4) 75%, transparent 100%);
-                                box-shadow: 0 0 12px #ff0055, 0 0 24px rgba(255, 0, 85, 0.9);
-                                pointer-events: none;
-                                z-index: 2147483647;
-                                transform: translate(-50%, -50%);
-                                transition: left 0.08s ease-out, top 0.08s ease-out;
-                            }
-                            #agentx-ring {
-                                position: fixed;
-                                width: 40px;
-                                height: 40px;
-                                border-radius: 50%;
-                                border: 2px solid #00f0ff;
-                                box-shadow: 0 0 12px #00f0ff;
-                                pointer-events: none;
-                                z-index: 2147483646;
-                                transform: translate(-50%, -50%);
-                                transition: left 0.14s ease-out, top 0.14s ease-out, transform 0.15s ease;
-                            }
-                            #agentx-label {
-                                position: fixed;
-                                background: rgba(8, 8, 16, 0.9);
-                                color: #00f0ff;
-                                font-family: monospace;
-                                font-size: 11px;
-                                font-weight: bold;
-                                padding: 2px 7px;
-                                border-radius: 4px;
-                                border: 1px solid #00f0ff;
-                                box-shadow: 0 0 8px rgba(0, 240, 255, 0.4);
-                                pointer-events: none;
-                                z-index: 2147483647;
-                                transform: translate(16px, -16px);
-                                transition: left 0.14s ease-out, top 0.14s ease-out;
-                                letter-spacing: 0.5px;
-                            }
-                        `;
-                        const parent = document.head || document.documentElement;
-                        parent.appendChild(style);
-
-                        const cursor = document.createElement('div');
-                        cursor.id = 'agentx-cursor';
-                        const ring = document.createElement('div');
-                        ring.id = 'agentx-ring';
-                        const label = document.createElement('div');
-                        label.id = 'agentx-label';
-                        label.textContent = 'AgentX AI';
-
-                        const b = document.body || document.documentElement;
-                        b.appendChild(cursor);
-                        b.appendChild(ring);
-                        b.appendChild(label);
-                    }
-
-                    window.addEventListener('mousemove', (e) => {
-                        const c = document.getElementById('agentx-cursor');
-                        const r = document.getElementById('agentx-ring');
-                        const l = document.getElementById('agentx-label');
-                        if (c) { c.style.left = e.clientX + 'px'; c.style.top = e.clientY + 'px'; }
-                        if (r) { r.style.left = e.clientX + 'px'; r.style.top = e.clientY + 'px'; }
-                        if (l) { l.style.left = e.clientX + 'px'; l.style.top = e.clientY + 'px'; }
-                    }, { passive: true });
-
-                    window.addEventListener('click', (e) => {
-                        const r = document.getElementById('agentx-ring');
-                        if (r) {
-                            r.style.transform = 'translate(-50%, -50%) scale(1.8)';
-                            r.style.borderColor = '#ff0055';
-                            setTimeout(() => {
-                                r.style.transform = 'translate(-50%, -50%) scale(1.0)';
-                                r.style.borderColor = '#00f0ff';
-                            }, 220);
-                        }
-                    }, { passive: true });
-
-                    if (document.readyState === 'loading') {
-                        document.addEventListener('DOMContentLoaded', setupCursor);
-                    } else {
-                        setupCursor();
-                    }
-                })();
-                """
-                context.add_init_script(cursor_script)
-
             self._browser = context
             self._context = context
             logger.info("Browser launched successfully.")
@@ -209,6 +125,9 @@ class BrowserManager:
     def new_page(self) -> Page:
         """Create and return a new page in the current browser context.
 
+        Reuses the existing initial page if present to avoid opening
+        unwanted background tabs or preserving stale restored session pages.
+
         Raises
         ------
         RuntimeError
@@ -221,7 +140,24 @@ class BrowserManager:
             )
 
         assert self._context is not None  # guarded by is_running()
-        page: Page = self._context.new_page()
+
+        # If persistent context already opened an initial tab, reuse it
+        if self._context.pages:
+            page = self._context.pages[0]
+            # Close any extraneous tabs that might have restored
+            for extra in self._context.pages[1:]:
+                try:
+                    extra.close()
+                except Exception:
+                    pass
+            try:
+                page.bring_to_front()
+            except Exception:
+                pass
+            logger.debug("Reusing primary page (total open: %d).", len(self._context.pages))
+            return page
+
+        page = self._context.new_page()
         logger.debug("New page created (total open: %d).", len(self._context.pages))
         return page
 
