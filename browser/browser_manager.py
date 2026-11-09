@@ -151,6 +151,8 @@ class BrowserManager:
 
     def check_login_status(self, page: Page | None = None) -> bool:
         """Probe whether the current session is authenticated on Unstop."""
+        import time as _time
+
         close_page = False
         if page is None:
             if not self.is_running():
@@ -159,11 +161,28 @@ class BrowserManager:
             close_page = True
 
         try:
+            # 1. Primary check: inspect persistent authentication cookies
+            if self._context is not None:
+                try:
+                    cookies = self._context.cookies(["https://unstop.com", "https://api.unstop.com"])
+                    auth_cookie_names = {"access_token", "token", "jwt", "session_id", "user_id"}
+                    for cookie in cookies:
+                        c_name = cookie.get("name", "").lower()
+                        c_val = cookie.get("value", "")
+                        if (c_name in auth_cookie_names or "token" in c_name) and len(c_val) > 10:
+                            expires = cookie.get("expires", -1)
+                            if expires == -1 or expires > _time.time():
+                                logger.info("Valid authentication token '%s' detected in session cookies.", cookie.get("name"))
+                                return True
+                except Exception as c_exc:
+                    logger.debug("Cookie inspection error: %s", c_exc)
+
+            # 2. Secondary check: DOM logged-in indicators
             current_url = page.url
             if "unstop.com" not in current_url:
                 page.goto("https://unstop.com", wait_until="domcontentloaded")
+                page.wait_for_timeout(1500)
 
-            # Check for logged-in indicators
             logged_in_selectors = [
                 "un-user-avatar",
                 ".user-profile",
@@ -171,15 +190,13 @@ class BrowserManager:
                 "[class*='profile_icon']",
                 "[class*='user_logged_in']",
                 "img[alt*='profile' i]",
+                "a[href*='/dashboard']",
+                "[class*='avatar']",
             ]
             for sel in logged_in_selectors:
-                if page.query_selector(sel) is not None:
+                el = page.query_selector(sel)
+                if el is not None and el.is_visible():
                     return True
-
-            # If login button is visible, definitely not logged in
-            login_btn = page.query_selector("button:has-text('Login'), a:has-text('Login'), a[href*='/login']")
-            if login_btn is not None:
-                return False
 
             return False
         except Exception as exc:
