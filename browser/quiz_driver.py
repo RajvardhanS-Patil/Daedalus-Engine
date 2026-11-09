@@ -116,6 +116,47 @@ class QuizDriver:
         "button:has-text('Take Test')",
         "button:has-text('Start Now')",
         "a:has-text('Start Assessment')",
+        "button:has-text('Continue')",
+        "button:has-text('Proceed')",
+        "button:has-text('Agree & Continue')",
+        "button:has-text('I Agree')",
+        "button:has-text('Start')",
+        "button:has-text('Play')",
+    ]
+
+    ROUND_BUTTON_SELECTORS = [
+        "a[href*='/assessment/']",
+        "a[href*='/quiz/']",
+        "a[href*='/round/']",
+        "button:has-text('Take Assessment')",
+        "a:has-text('Take Assessment')",
+        "button:has-text('Start Assessment')",
+        "a:has-text('Start Assessment')",
+        "button:has-text('Play')",
+        "a:has-text('Play')",
+        "button:has-text('Enter Round')",
+        "a:has-text('Enter Round')",
+        "button:has-text('Take Test')",
+        "a:has-text('Take Test')",
+        "button:has-text('Attempt')",
+        "a:has-text('Attempt')",
+        "button:has-text('Enter')",
+        "a:has-text('Enter')",
+        "button:has-text('Join Round')",
+        "button:has-text('Go to Assessment')",
+        "a:has-text('Go to Assessment')",
+        "button:has-text('View Assessment')",
+        "a:has-text('View Assessment')",
+    ]
+
+    STAGES_TAB_SELECTORS = [
+        "button:has-text('Stages & Timelines')",
+        "a:has-text('Stages & Timelines')",
+        "span:has-text('Stages & Timelines')",
+        "li:has-text('Stages & Timelines')",
+        "[id*='stages']",
+        "button:has-text('Rounds')",
+        "a:has-text('Rounds')",
     ]
 
     TIMER_SELECTORS = [
@@ -203,6 +244,108 @@ class QuizDriver:
 
         logger.info("No explicit start button found; assessment may already be in progress.")
         return False
+
+    def find_and_enter_assessment(self, page: Page) -> Page:
+        """Navigate through competition overview pages to locate and enter the live assessment.
+
+        Handles clicking round tabs, round action buttons, and switching to popup tabs.
+        Returns the active assessment Page object.
+        """
+        # If questions already visible, we are ready
+        if self._has_visible_questions(page):
+            return page
+
+        initial_pages_count = len(self.browser_manager._context.pages) if self.browser_manager._context else 1
+
+        # Check for direct round buttons
+        clicked = False
+        for selector in self.ROUND_BUTTON_SELECTORS:
+            try:
+                el = page.query_selector(selector)
+                if el and el.is_visible():
+                    logger.info("Found round entry CTA: %s. Clicking...", selector)
+                    el.scroll_into_view_if_needed()
+                    el.click()
+                    page.wait_for_timeout(2500)
+                    clicked = True
+                    break
+            except Exception as exc:
+                logger.debug("Round button click error '%s': %s", selector, exc)
+
+        # If direct round button wasn't found, try clicking 'Stages & Timelines' tab
+        if not clicked:
+            for s_sel in self.STAGES_TAB_SELECTORS:
+                try:
+                    tab = page.query_selector(s_sel)
+                    if tab and tab.is_visible():
+                        logger.info("Clicking Stages & Timelines tab: %s", s_sel)
+                        tab.click()
+                        page.wait_for_timeout(1500)
+                        for r_sel in self.ROUND_BUTTON_SELECTORS:
+                            el = page.query_selector(r_sel)
+                            if el and el.is_visible():
+                                logger.info("Found round CTA under Stages tab: %s", r_sel)
+                                el.scroll_into_view_if_needed()
+                                el.click()
+                                page.wait_for_timeout(2500)
+                                clicked = True
+                                break
+                        if clicked:
+                            break
+                except Exception as exc:
+                    logger.debug("Stages tab navigation error '%s': %s", s_sel, exc)
+
+        # Check if assessment opened in a new browser tab / window
+        if self.browser_manager._context and len(self.browser_manager._context.pages) > initial_pages_count:
+            new_page = self.browser_manager._context.pages[-1]
+            logger.info("Assessment loaded in new browser tab: %s", new_page.url)
+            new_page.bring_to_front()
+            page = new_page
+            page.wait_for_timeout(2000)
+
+        # Attempt to click start / instructions button
+        self.click_start_assessment(page)
+        return page
+
+    def _has_visible_questions(self, page: Page) -> bool:
+        """Check if any question choices/options are currently visible in DOM or frames."""
+        opts = self._get_option_elements(page)
+        return len(opts) >= 2
+
+    def detect_page_status(self, page: Page) -> str:
+        """Analyze page text to identify why assessment might not be active."""
+        try:
+            body_text = page.inner_text("body").lower()
+        except Exception:
+            return ""
+
+        # Scheduled timing
+        start_patterns = [
+            r"(starts\s+(?:on|at|in)\s+[^.\n\r]+)",
+            r"(live\s+(?:on|from|in)\s+[^.\n\r]+)",
+            r"(round\s+starts\s+[^.\n\r]+)",
+            r"(assessment\s+starts\s+[^.\n\r]+)",
+            r"(starts\s+in\s+\d+\s+(?:days?|hours?|mins?))",
+        ]
+        for pattern in start_patterns:
+            m = re.search(pattern, body_text)
+            if m:
+                clean_msg = re.sub(r"\s+", " ", m.group(1)).strip()
+                return f"Scheduled: {clean_msg}"
+
+        if "registration closed" in body_text:
+            return "Registration is closed for this opportunity."
+        if "register now" in body_text or "registration deadline" in body_text:
+            reg_btn = page.query_selector("button:has-text('Register'), a:has-text('Register')")
+            if reg_btn and reg_btn.is_visible():
+                return "Registration required before entering this assessment."
+
+        if "round has expired" in body_text or "assessment ended" in body_text:
+            return "Assessment period has already ended."
+        if "results declared" in body_text or "view results" in body_text:
+            return "Assessment is concluded; results declared."
+
+        return ""
 
     def scrape_current_question(self, page: Page) -> ScrapedQuestion:
         """Scrape the currently active question, code block, options, and timer."""
@@ -331,18 +474,29 @@ class QuizDriver:
     # ─── Internal Extraction Helpers ──────────────────────────────────────────
 
     def _extract_question_text(self, page: Page) -> str:
-        """Extract clean text for the active question."""
-        for selector in self.QUESTION_CONTAINER_SELECTORS:
-            el = page.query_selector(selector)
-            if el and el.is_visible():
-                txt = el.inner_text().strip()
-                if txt and len(txt) > 5:
-                    return txt
+        """Extract clean text for the active question across main page and child frames."""
+        scopes = [page]
+        for f in getattr(page, "frames", []):
+            if f != page.main_frame:
+                scopes.append(f)
 
-        # Fallback: search main card or body
-        card = page.query_selector(".mat-card, .assessment-body, main")
-        if card:
-            return card.inner_text().strip()[:500]
+        for scope in scopes:
+            for selector in self.QUESTION_CONTAINER_SELECTORS:
+                try:
+                    el = scope.query_selector(selector)
+                    if el and el.is_visible():
+                        txt = el.inner_text().strip()
+                        if txt and len(txt) > 5:
+                            return txt
+                except Exception:
+                    pass
+
+            try:
+                card = scope.query_selector(".mat-card, .assessment-body, main")
+                if card and card.is_visible():
+                    return card.inner_text().strip()[:500]
+            except Exception:
+                pass
 
         return "Unknown Question"
 
@@ -351,27 +505,42 @@ class QuizDriver:
         elements = self._get_option_elements(page)
         options = []
         for el in elements:
-            raw_text = el.inner_text().strip()
-            # Clean leading prefixes like 'A.', 'B)', '1.', '(A)'
-            clean_text = re.sub(r"^[A-Da-d0-9][\.\)\:\-]\s*", "", raw_text).strip()
-            if clean_text:
-                options.append(clean_text)
+            try:
+                raw_text = el.inner_text().strip()
+                # Clean leading prefixes like 'A.', 'B)', '1.', '(A)'
+                clean_text = re.sub(r"^[A-Da-d0-9][\.\)\:\-]\s*", "", raw_text).strip()
+                if clean_text:
+                    options.append(clean_text)
+            except Exception:
+                pass
 
         return options
 
     def _get_option_elements(self, page: Page) -> list[ElementHandle]:
-        """Retrieve list of option DOM element handles."""
-        for selector in self.OPTION_ITEM_SELECTORS:
-            elements = page.query_selector_all(selector)
-            visible_elements = [el for el in elements if el.is_visible()]
-            if len(visible_elements) >= 2:
-                return visible_elements
+        """Retrieve list of option DOM element handles across page and child frames."""
+        scopes = [page]
+        for f in getattr(page, "frames", []):
+            if f != page.main_frame:
+                scopes.append(f)
 
-        # Fallback to radio inputs
-        radios = page.query_selector_all("input[type='radio']")
-        visible_radios = [r for r in radios if r.is_visible()]
-        if len(visible_radios) >= 2:
-            return visible_radios
+        for scope in scopes:
+            for selector in self.OPTION_ITEM_SELECTORS:
+                try:
+                    elements = scope.query_selector_all(selector)
+                    visible_elements = [el for el in elements if el.is_visible()]
+                    if len(visible_elements) >= 2:
+                        return visible_elements
+                except Exception:
+                    pass
+
+            # Fallback to radio inputs
+            try:
+                radios = scope.query_selector_all("input[type='radio']")
+                visible_radios = [r for r in radios if r.is_visible()]
+                if len(visible_radios) >= 2:
+                    return visible_radios
+            except Exception:
+                pass
 
         return []
 

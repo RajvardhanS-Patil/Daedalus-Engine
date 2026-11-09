@@ -122,7 +122,11 @@ class LiveQuizAgent:
                 result.error_message = "Failed to load quiz assessment page."
                 return result
 
-            # 3. Proctoring Safety Check
+            # 3. Enter Assessment (handle competition pages, tabs, stages)
+            self._notify(update_callback, "status", "Locating assessment round and start CTA...")
+            page = self.driver.find_and_enter_assessment(page)
+
+            # 4. Proctoring Safety Check
             self._notify(update_callback, "status", "Checking for proctoring restrictions...")
             is_proctored, proctor_reason = self.driver.detect_proctoring(page)
             if is_proctored and settings.quiz_automation.abort_on_proctoring:
@@ -135,21 +139,44 @@ class LiveQuizAgent:
                 self._notify(update_callback, "proctor_abort", result.error_message)
                 return result
 
-            # 4. Start Assessment
-            self._notify(update_callback, "status", "Starting assessment...")
-            self.driver.click_start_assessment(page)
+            # 5. Live Screen Observation Loop (wait for quiz questions to be active)
+            page = self._wait_for_live_questions(
+                page=page,
+                timeout_seconds=30,
+                update_callback=update_callback,
+            )
 
-            # 5. Initialize Database Session
+            # Check if questions were found
+            if not self.driver._has_visible_questions(page):
+                page_status = self.driver.detect_page_status(page)
+                if page_status:
+                    result.status = "not_active"
+                    result.error_message = f"Assessment is not live right now. {page_status}"
+                    self._notify(update_callback, "status", f"Notice: {page_status}")
+                else:
+                    result.status = "no_questions_found"
+                    result.error_message = (
+                        "No active quiz questions detected on screen. "
+                        "The assessment may not be open yet or requires manual registration."
+                    )
+                self._notify(update_callback, "error", result.error_message)
+                return result
+
+            # 6. Initialize Database Session
             session_id = self._create_db_session(opportunity_url)
             result.session_id = session_id
+            self._notify(update_callback, "status", "Questions detected! Beginning autonomous test solving...")
 
-            # 6. Autonomous Solving Loop
+            # 7. Autonomous Solving Loop
             seen_questions: set[str] = set()
             attempts: list[dict[str, Any]] = []
             confidences: list[float] = []
 
             for q_idx in range(1, max_questions + 1):
                 page.wait_for_timeout(1000)
+
+                # Keep page reference updated to the active tab
+                page = self._get_active_quiz_page(page)
 
                 # Check if test completed
                 if self.driver.is_quiz_completed(page):
@@ -161,14 +188,13 @@ class LiveQuizAgent:
 
                 # Termination check: empty options or repeated question with no progress
                 if not scraped.options:
-                    logger.info("No options found on page; checking if quiz finished.")
-                    if self.driver.is_quiz_completed(page):
-                        break
-                    # Wait briefly for dynamic render
-                    page.wait_for_timeout(2000)
+                    page.wait_for_timeout(2500)
                     scraped = self.driver.scrape_current_question(page)
                     if not scraped.options:
-                        logger.warning("Options remain unavailable. Assuming end of assessment.")
+                        if self.driver.is_quiz_completed(page):
+                            logger.info("Quiz reached completion screen.")
+                        else:
+                            logger.warning("Options remain unavailable. Finishing assessment loop.")
                         break
 
                 q_key = scraped.question_text[:80].strip()
@@ -250,7 +276,7 @@ class LiveQuizAgent:
                     self._notify(update_callback, "status", "Moving to next question...")
                     self.driver.click_next(page)
 
-            # 7. Finalize Results
+            # 8. Finalize Results
             duration = time.time() - start_time
             avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
 
@@ -279,6 +305,9 @@ class LiveQuizAgent:
             return result
 
         finally:
+            if not headless:
+                # Retain browser briefly on screen so user can see final status
+                time.sleep(4)
             self.browser_manager.close()
 
     # ─── Internal Helpers ─────────────────────────────────────────────────────
@@ -289,6 +318,55 @@ class LiveQuizAgent:
         d_max = settings.quiz_automation.human_like_delay_max
         delay = random.uniform(d_min, d_max)
         time.sleep(delay)
+
+    def _wait_for_live_questions(
+        self,
+        page: Any,
+        timeout_seconds: int = 30,
+        update_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+    ) -> Any:
+        """Observe all open browser tabs and frames until quiz questions appear on screen."""
+        self._notify(
+            update_callback,
+            "status",
+            "AgentX is observing screen for live quiz questions... (You can click into your test if needed)",
+        )
+        end_time = time.time() + timeout_seconds
+
+        while time.time() < end_time:
+            context_pages = (
+                self.browser_manager._context.pages
+                if self.browser_manager._context
+                else [page]
+            )
+            for candidate_page in reversed(context_pages):
+                try:
+                    if self.driver._has_visible_questions(candidate_page):
+                        logger.info("Live questions detected on tab: %s", getattr(candidate_page, "url", "unknown"))
+                        if hasattr(candidate_page, "bring_to_front"):
+                            candidate_page.bring_to_front()
+                        return candidate_page
+                except Exception:
+                    pass
+
+            time.sleep(1.2)
+
+        return self._get_active_quiz_page(page)
+
+    def _get_active_quiz_page(self, fallback_page: Any) -> Any:
+        """Locate the currently active browser tab."""
+        if not self.browser_manager._context:
+            return fallback_page
+        pages = self.browser_manager._context.pages
+        if not pages:
+            return fallback_page
+        for p in reversed(pages):
+            try:
+                if "/assessment/" in getattr(p, "url", "") or self.driver._has_visible_questions(p):
+                    return p
+            except Exception:
+                pass
+        return pages[-1]
 
     def _notify(
         self,
